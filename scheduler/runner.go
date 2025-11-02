@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/robfig/cron/v3"
 
 	"github.com/metailurini/simple-job-queue/apperrors"
@@ -22,8 +21,8 @@ import (
 // Implementations should ensure FetchSchedulesTx returns rows scanned into the
 // storage.ScheduleRow projection (see storage.ScanSchedule).
 type scheduleStore interface {
-	Begin(ctx context.Context) (pgx.Tx, error)
-	FetchSchedulesTx(ctx context.Context, tx pgx.Tx) ([]storage.ScheduleRow, error)
+	Begin(ctx context.Context) (storage.Tx, error)
+	FetchSchedulesTx(ctx context.Context, tx storage.Tx) ([]storage.ScheduleRow, error)
 	EnqueueJobs(ctx context.Context, params []storage.EnqueueParams) ([]int64, error)
 }
 
@@ -96,7 +95,7 @@ func (r *Runner) tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 
 	schedules, err := r.store.FetchSchedulesTx(ctx, tx)
 	if err != nil {
@@ -117,11 +116,15 @@ func (r *Runner) tick(ctx context.Context) error {
 			previous = *schedule.LastEnqueuedAt
 		}
 
-		tag, err := tx.Exec(ctx, `UPDATE queue_schedules SET last_enqueued_at=$2 WHERE id=$1 AND (last_enqueued_at IS NOT DISTINCT FROM $3)`, schedule.ID, last, previous)
+		result, err := tx.ExecContext(ctx, `UPDATE queue_schedules SET last_enqueued_at=$2 WHERE id=$1 AND (last_enqueued_at IS NOT DISTINCT FROM $3)`, schedule.ID, last, previous)
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
 			// Another runner updated this schedule first; skip to the next.
 			continue
 		}
@@ -129,14 +132,14 @@ func (r *Runner) tick(ctx context.Context) error {
 		if err := r.enqueueRuns(ctx, schedule, due); err != nil {
 			r.logger.Error("enqueue schedule run failed", "schedule_id", schedule.ID, "err", err)
 
-			if _, revertErr := tx.Exec(ctx, `UPDATE queue_schedules SET last_enqueued_at=$2 WHERE id=$1 AND (last_enqueued_at IS NOT DISTINCT FROM $3)`, schedule.ID, previous, last); revertErr != nil {
+			if _, revertErr := tx.ExecContext(ctx, `UPDATE queue_schedules SET last_enqueued_at=$2 WHERE id=$1 AND (last_enqueued_at IS NOT DISTINCT FROM $3)`, schedule.ID, previous, last); revertErr != nil {
 				return fmt.Errorf("revert schedule %d failed: %w, original enqueue error: %v", schedule.ID, revertErr, err)
 			}
 			continue
 		}
 	}
 
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 func (r *Runner) computeDue(schedule storage.ScheduleRow, now time.Time) []time.Time {

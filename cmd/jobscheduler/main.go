@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"log/slog"
@@ -10,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib" // Import pgx driver for database/sql
 
 	"github.com/metailurini/simple-job-queue/diag"
 	"github.com/metailurini/simple-job-queue/scheduler"
@@ -43,15 +44,29 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, *dsn)
+	// Open database connection using pgx driver for database/sql
+	sqlDB, err := sql.Open("pgx", *dsn)
 	if err != nil {
-		logger.Error("failed to init pgx pool", "err", err)
+		logger.Error("failed to open database", "err", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer sqlDB.Close()
+
+	// Configure connection pool settings
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(1 * time.Minute)
+
+	// Verify database connection
+	if err := sqlDB.PingContext(ctx); err != nil {
+		logger.Error("failed to ping database", "err", err)
+		os.Exit(1)
+	}
 
 	provider := timeprovider.RealProvider{}
-	store, err := storage.NewStoreWithProvider(pool, provider)
+	db := storage.NewDB(sqlDB)
+	store, err := storage.NewStoreWithProvider(db, provider)
 	if err != nil {
 		logger.Error("failed to build store", "err", err)
 		os.Exit(1)
@@ -65,6 +80,15 @@ func main() {
 		logger.Error("failed to build scheduler", "err", err)
 		os.Exit(1)
 	}
+
+	// TODO: Migrate diag to use *sql.DB
+	// For now, keep using pgxpool for diag package during the transition
+	pool, err := storage.NewPgxPoolFromDB(ctx, sqlDB, *dsn)
+	if err != nil {
+		logger.Error("failed to create pgxpool adapter", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
 
 	// record and log DB/app clock drift at startup
 	_, _ = diag.RecordClockDrift(ctx, pool, provider, logger)

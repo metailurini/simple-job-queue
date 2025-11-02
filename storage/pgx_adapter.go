@@ -24,6 +24,20 @@ func NewPgxPoolAdapter(pool *pgxpool.Pool) DB {
 	return &pgxPoolAdapter{pool: pool}
 }
 
+// NewPgxPoolFromDB creates a new pgxpool.Pool from a *sql.DB connection.
+// This is a temporary helper to support packages that still require pgxpool
+// during the migration. It creates a separate pgxpool connection using the
+// same DSN. This will be removed once all packages are migrated to database/sql.
+func NewPgxPoolFromDB(ctx context.Context, _ *sql.DB, dsn string) (*pgxpool.Pool, error) {
+	// Note: We create a new pool here rather than trying to share the sql.DB connection
+	// This is inefficient but temporary during the migration phase
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("create pgxpool: %w", err)
+	}
+	return pool, nil
+}
+
 func (a *pgxPoolAdapter) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	tag, err := a.pool.Exec(ctx, query, args...)
 	if err != nil {
