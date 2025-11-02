@@ -1,3 +1,7 @@
 .vscode
 .opencode
 .specify
+
+# Binary executables
+jobscheduler
+jobworker

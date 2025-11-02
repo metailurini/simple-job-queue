@@ -84,16 +84,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Migrate worker, janitor, and diag to use *sql.DB
-	// For now, keep using pgxpool for these packages during the transition
-	// This will be removed once those packages are migrated
-	pool, err := storage.NewPgxPoolFromDB(ctx, sqlDB, *dsn)
-	if err != nil {
-		logger.Error("failed to create pgxpool adapter", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-
 	queueCfg := worker.QueueConfig{
 		Name:          *queue,
 		BatchSize:     *batchSize,
@@ -123,6 +113,15 @@ func main() {
 		},
 	}
 
+	// TODO: Migrate worker and janitor to use *sql.DB
+	// For now, keep using pgxpool for these packages during the transition
+	pool, err := storage.NewPgxPoolFromDB(ctx, sqlDB, *dsn)
+	if err != nil {
+		logger.Error("failed to create pgxpool adapter", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
 	runner, err := worker.NewRunner(store, pool, handlers, workerCfg)
 	if err != nil {
 		logger.Error("failed to build worker", "err", err)
@@ -130,7 +129,7 @@ func main() {
 	}
 
 	// record and log DB/app clock drift at startup
-	_, _ = diag.RecordClockDrift(ctx, pool, provider, logger)
+	_, _ = diag.RecordClockDrift(ctx, sqlDB, provider, logger)
 
 	// Start janitor in separate goroutine
 	// If janitorMaxAge was provided use it; otherwise default to 2× lease.

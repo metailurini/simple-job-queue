@@ -81,17 +81,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Migrate diag to use *sql.DB
-	// For now, keep using pgxpool for diag package during the transition
-	pool, err := storage.NewPgxPoolFromDB(ctx, sqlDB, *dsn)
-	if err != nil {
-		logger.Error("failed to create pgxpool adapter", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-
 	// record and log DB/app clock drift at startup
-	_, _ = diag.RecordClockDrift(ctx, pool, provider, logger)
+	_, _ = diag.RecordClockDrift(ctx, sqlDB, provider, logger)
 
 	logger.Info("job scheduler starting", "interval", interval.String(), "catch_up", *catchUp)
 	if err := runner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
