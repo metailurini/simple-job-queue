@@ -54,7 +54,8 @@ func newTestStoreWithProvider(t *testing.T, provider timeprovider.Provider) (*St
 	pool := mustConnectTestDB(t)
 	resetTestTables(t, pool)
 
-	store, err := NewStoreWithProvider(pool, provider)
+	db := NewPgxPoolAdapter(pool)
+	store, err := NewStoreWithProvider(db, provider)
 	if err != nil {
 		t.Fatalf("failed to build store: %v", err)
 	}
@@ -665,7 +666,12 @@ func TestFailJob_InsertsFailureRecordAndIncrementsAttempts(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1", job.Attempts)
 	}
 
-	rows, err := store.DB.Query(ctx, "SELECT error, failed_at FROM queue_job_failures WHERE job_id = $1", id)
+	// Cast to pgxPoolAdapter to access Query method for integration test
+	adapter, ok := store.DB.(*pgxPoolAdapter)
+	if !ok {
+		t.Fatal("expected pgxPoolAdapter in integration test")
+	}
+	rows, err := adapter.Query(ctx, "SELECT error, failed_at FROM queue_job_failures WHERE job_id = $1", id)
 	if err != nil {
 		t.Fatalf("query failures: %v", err)
 	}
