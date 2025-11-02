@@ -14,15 +14,16 @@ import (
 )
 
 func TestEnqueueJob_DefaultsRunAtAndSerializesTZ(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	providerNow := time.Date(2024, 12, 1, 9, 0, 0, 0, time.FixedZone("EST", -5*3600))
 	expectedUTC := providerNow.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return providerNow })
+	store := newStoreWithNow(t, db, func() time.Time { return providerNow })
 
-	runner.Mock.ExpectQuery(enqueueSQL).
+	mock.ExpectQuery(enqueueSQL).
 		WithArgs("default", "send-email", []byte("{}"), 0, expectedUTC, 20, 10, nil, nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
 
@@ -34,20 +35,23 @@ func TestEnqueueJob_DefaultsRunAtAndSerializesTZ(t *testing.T) {
 }
 
 func TestFetchSchedulesTxSelectsWithoutLocks(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at"}).
 		AddRow(int64(1), "sync", "default", []byte(`{"a":1}`), "* * * * *", sql.NullString{}, sql.NullTime{})
 
-	runner.Mock.ExpectQuery(`
+	mock.ExpectBegin()
+	mock.ExpectQuery(`
 SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
 FROM queue_schedules;
 `).
 		WillReturnRows(rows)
 
 	ctx := context.Background()
-	tx, err := runner.Begin(ctx)
+	db_adapter := NewDB(db)
+	tx, err := db_adapter.BeginTx(ctx, nil)
 	require.NoError(t, err)
 
 	store := &Store{}
@@ -58,17 +62,18 @@ FROM queue_schedules;
 }
 
 func TestHeartbeatJob_TruncatesExtendToSeconds(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	base := time.Date(2030, 3, 4, 5, 6, 7, 9, time.FixedZone("IST", 19800))
 	baseUTC := base.UTC()
 	extend := 30*time.Second + 512*time.Millisecond
 	leaseUntil := baseUTC.Add(30 * time.Second)
 
-	store := newStoreWithNow(t, runner, func() time.Time { return base })
+	store := newStoreWithNow(t, db, func() time.Time { return base })
 
-	runner.Mock.ExpectExec("UPDATE queue_jobs\nSET lease_until = $3,\n    updated_at  = $4\nWHERE id=$1 AND worker_id=$2;").
+	mock.ExpectExec("UPDATE queue_jobs\nSET lease_until = $3,\n    updated_at  = $4\nWHERE id=$1 AND worker_id=$2;").
 		WithArgs(int64(77), "wk", leaseUntil, baseUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -79,15 +84,16 @@ func TestHeartbeatJob_TruncatesExtendToSeconds(t *testing.T) {
 }
 
 func TestHeartbeatJob_ReturnsErrLeaseMismatchOnZeroRows(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	base := time.Date(2031, 1, 2, 3, 4, 5, 0, time.FixedZone("CET", 1*3600))
 	baseUTC := base.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return base })
+	store := newStoreWithNow(t, db, func() time.Time { return base })
 
-	runner.Mock.ExpectExec("UPDATE queue_jobs\nSET lease_until = $3,\n    updated_at  = $4\nWHERE id=$1 AND worker_id=$2;").
+	mock.ExpectExec("UPDATE queue_jobs\nSET lease_until = $3,\n    updated_at  = $4\nWHERE id=$1 AND worker_id=$2;").
 		WithArgs(int64(1), "worker", baseUTC.Add(10*time.Second), baseUTC).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -97,15 +103,16 @@ func TestHeartbeatJob_ReturnsErrLeaseMismatchOnZeroRows(t *testing.T) {
 }
 
 func TestRequeueJob_DefaultsRunAtToProviderUTC(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	now := time.Date(2026, 7, 8, 9, 10, 11, 0, time.FixedZone("ACDT", 10*3600+1800))
 	nowUTC := now.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return now })
+	store := newStoreWithNow(t, db, func() time.Time { return now })
 
-	runner.Mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;").
+	mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;").
 		WithArgs(int64(55), "worker-1", nowUTC, nowUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -116,17 +123,18 @@ func TestRequeueJob_DefaultsRunAtToProviderUTC(t *testing.T) {
 }
 
 func TestRequeueJob_UsesProvidedRunAtAndNormalizes(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	now := time.Date(2026, 7, 8, 9, 10, 11, 0, time.FixedZone("ACDT", 10*3600+1800))
 	nowUTC := now.UTC()
 	runAt := time.Date(2026, 7, 9, 1, 2, 3, 0, time.FixedZone("PDT", -7*3600))
 	runAtUTC := runAt.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return now })
+	store := newStoreWithNow(t, db, func() time.Time { return now })
 
-	runner.Mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;").
+	mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;").
 		WithArgs(int64(56), "worker-2", runAtUTC, nowUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -137,15 +145,16 @@ func TestRequeueJob_UsesProvidedRunAtAndNormalizes(t *testing.T) {
 }
 
 func TestRequeueJob_ReturnsErrLeaseMismatchOnZeroRows(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	now := time.Date(2026, 7, 8, 9, 10, 11, 0, time.FixedZone("ACDT", 10*3600+1800))
 	nowUTC := now.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return now })
+	store := newStoreWithNow(t, db, func() time.Time { return now })
 
-	runner.Mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;").
+	mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;").
 		WithArgs(int64(57), "worker-3", nowUTC, nowUTC).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -155,60 +164,57 @@ func TestRequeueJob_ReturnsErrLeaseMismatchOnZeroRows(t *testing.T) {
 }
 
 func TestFailJob_RecordsFailureAndCommits(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
-
-	pool := newSQLMockPool(runner)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	base := time.Date(2027, 8, 9, 10, 11, 12, 0, time.FixedZone("JST", 9*3600))
 	baseUTC := base.UTC()
 	nextRun := time.Date(2027, 8, 10, 1, 2, 3, 0, time.FixedZone("CST", -6*3600))
 	nextRunUTC := nextRun.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return base })
+	store := newStoreWithNow(t, db, func() time.Time { return base })
 
 	updateSQL := "UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;"
 
-	runner.Mock.ExpectQuery(updateSQL).
+	mock.ExpectBegin()
+	mock.ExpectQuery(updateSQL).
 		WithArgs(int64(88), "worker", nextRunUTC, baseUTC).
 		WillReturnRows(sqlmock.NewRows([]string{"attempts", "status"}).AddRow(2, "queued"))
 
-	runner.Mock.ExpectExec("INSERT INTO queue_job_failures (job_id, error, attempts, failed_at)\nVALUES ($1, $2, $3, $4);").
+	mock.ExpectExec("INSERT INTO queue_job_failures (job_id, error, attempts, failed_at)\nVALUES ($1, $2, $3, $4);").
 		WithArgs(int64(88), "boom", 2, baseUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	ctx := context.Background()
 	dead, err := store.FailJob(ctx, 88, "worker", nextRun, "boom")
 	require.NoError(t, err)
 	assert.False(t, dead, "expected job to remain queued")
-	require.NotNil(t, pool.last, "expected transaction to be created")
-	assert.True(t, pool.last.committed, "expected transaction commit")
-	assert.False(t, pool.last.rolled, "expected no rollback on success")
 	storagetest.AssertUTC(t, baseUTC)
 	storagetest.AssertUTC(t, nextRunUTC)
 }
 
 func TestFailJob_ReturnsErrLeaseMismatch(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
-
-	pool := newSQLMockPool(runner)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
+	defer func() { require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	base := time.Date(2027, 8, 9, 10, 11, 12, 0, time.FixedZone("JST", 9*3600))
 	baseUTC := base.UTC()
 
-	store := newStoreWithNow(t, runner, func() time.Time { return base })
+	store := newStoreWithNow(t, db, func() time.Time { return base })
 
 	updateSQL := "UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;"
 
-	runner.Mock.ExpectQuery(updateSQL).
+	mock.ExpectBegin()
+	mock.ExpectQuery(updateSQL).
 		WithArgs(int64(89), "worker", baseUTC, baseUTC).
 		WillReturnRows(sqlmock.NewRows([]string{"attempts", "status"}))
+	mock.ExpectRollback()
 
 	ctx := context.Background()
 	dead, err := store.FailJob(ctx, 89, "worker", time.Time{}, "boom")
 	assert.ErrorIs(t, err, ErrLeaseMismatch)
 	assert.False(t, dead)
-	require.NotNil(t, pool.last, "expected transaction to be created")
-	assert.True(t, pool.last.rolled, "expected rollback on lease mismatch")
 }

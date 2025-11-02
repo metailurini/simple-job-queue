@@ -7,14 +7,8 @@ import "time"
 // database implementations without relying on unsafe access to the Store
 // internals.
 type TestStoreDependencies struct {
-	DB  TestDBRunner
+	DB  DB
 	Now func() time.Time
-}
-
-// TestDBRunner matches the Store's internal database runner contract. It is
-// exported solely for use in tests.
-type TestDBRunner interface {
-	dbRunner
 }
 
 // NewTestStore constructs a Store using the supplied test dependencies. Nil

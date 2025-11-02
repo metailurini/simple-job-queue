@@ -13,14 +13,14 @@ import (
 )
 
 func TestAcquireResource_Success(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	now := time.Date(2025, 10, 31, 12, 0, 0, 0, time.UTC)
-	store := newStoreWithNow(t, runner, func() time.Time { return now })
+	store := newStoreWithNow(t, db, func() time.Time { return now })
 
 	// Expect INSERT returning 1 row affected
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (resource_key) DO NOTHING;`).
@@ -34,14 +34,14 @@ ON CONFLICT (resource_key) DO NOTHING;`).
 }
 
 func TestAcquireResource_Conflict(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	now := time.Date(2025, 10, 31, 12, 0, 0, 0, time.UTC)
-	store := newStoreWithNow(t, runner, func() time.Time { return now })
+	store := newStoreWithNow(t, db, func() time.Time { return now })
 
 	// ON CONFLICT DO NOTHING → 0 rows affected
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (resource_key) DO NOTHING;`).
@@ -54,10 +54,10 @@ ON CONFLICT (resource_key) DO NOTHING;`).
 }
 
 func TestAcquireResource_EmptyKey(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
-	store := newStoreWithNow(t, runner, time.Now)
+	store := newStoreWithNow(t, db, time.Now)
 
 	// No SQL should be executed for empty resource key
 	ctx := context.Background()
@@ -66,16 +66,16 @@ func TestAcquireResource_EmptyKey(t *testing.T) {
 }
 
 func TestAcquireResource_NormalizesNonUTCTimezone(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	// Provider returns a time in a non-UTC timezone (EST)
 	providerNow := time.Date(2025, 10, 31, 12, 0, 0, 0, time.FixedZone("EST", -5*3600))
 	expectedUTC := providerNow.UTC()
-	store := newStoreWithNow(t, runner, func() time.Time { return providerNow })
+	store := newStoreWithNow(t, db, func() time.Time { return providerNow })
 
 	// Expect the time to be normalized to UTC in the SQL args
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (resource_key) DO NOTHING;`).
@@ -89,14 +89,14 @@ ON CONFLICT (resource_key) DO NOTHING;`).
 }
 
 func TestAcquireResource_ExecutionError(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
 	now := time.Date(2025, 10, 31, 12, 0, 0, 0, time.UTC)
-	store := newStoreWithNow(t, runner, func() time.Time { return now })
+	store := newStoreWithNow(t, db, func() time.Time { return now })
 
 	// Simulate a database error (e.g., connection failure)
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (resource_key) DO NOTHING;`).
@@ -111,12 +111,12 @@ ON CONFLICT (resource_key) DO NOTHING;`).
 }
 
 func TestReleaseResource_Success(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
-	store := newStoreWithNow(t, runner, time.Now)
+	store := newStoreWithNow(t, db, time.Now)
 
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 DELETE FROM queue_resource_locks
 WHERE resource_key = $1 AND job_id = $2;`).
 		WithArgs("order:123", int64(42)).
@@ -128,13 +128,13 @@ WHERE resource_key = $1 AND job_id = $2;`).
 }
 
 func TestReleaseResource_NotFound(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
-	store := newStoreWithNow(t, runner, time.Now)
+	store := newStoreWithNow(t, db, time.Now)
 
 	// Delete returns 0 rows affected when resource not found
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 DELETE FROM queue_resource_locks
 WHERE resource_key = $1 AND job_id = $2;`).
 		WithArgs("order:999", int64(100)).
@@ -147,10 +147,10 @@ WHERE resource_key = $1 AND job_id = $2;`).
 }
 
 func TestReleaseResource_EmptyKey(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
-	store := newStoreWithNow(t, runner, time.Now)
+	store := newStoreWithNow(t, db, time.Now)
 
 	// No SQL should be executed for empty resource key
 	ctx := context.Background()
@@ -159,13 +159,13 @@ func TestReleaseResource_EmptyKey(t *testing.T) {
 }
 
 func TestReleaseResource_ExecutionError(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer func() { mock.ExpectClose(); db.Close(); require.NoError(t, mock.ExpectationsWereMet()) }()
 
-	store := newStoreWithNow(t, runner, time.Now)
+	store := newStoreWithNow(t, db, time.Now)
 
 	// Simulate a database error
-	runner.Mock.ExpectExec(`
+	mock.ExpectExec(`
 DELETE FROM queue_resource_locks
 WHERE resource_key = $1 AND job_id = $2;`).
 		WithArgs("order:error", int64(200)).

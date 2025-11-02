@@ -13,10 +13,10 @@ import (
 )
 
 func TestClaimJobs_UsesProvidedNowAndLeaseOrder(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
 
-	store := &Store{DB: runner, now: func() time.Time { panic("unexpected now() call") }}
+	store := &Store{DB: NewDB(db), now: func() time.Time { panic("unexpected now() call") }}
 
 	ctx := context.Background()
 	tokyo := time.Date(2025, 2, 3, 4, 5, 6, 0, time.FixedZone("JST", 9*3600))
@@ -31,7 +31,7 @@ func TestClaimJobs_UsesProvidedNowAndLeaseOrder(t *testing.T) {
 		leaseUTC, "worker-1", nil, nil, nowUTC, nowUTC,
 	)
 
-	runner.Mock.ExpectQuery(claimSQL).
+	mock.ExpectQuery(claimSQL).
 		WithArgs("emails", "worker-1", 2, leaseUTC, nowUTC, true).
 		WillReturnRows(rows)
 
@@ -51,18 +51,20 @@ func TestClaimJobs_UsesProvidedNowAndLeaseOrder(t *testing.T) {
 	storagetest.AssertUTC(t, job.RunAt)
 	storagetest.AssertUTC(t, job.CreatedAt)
 	storagetest.AssertUTC(t, job.UpdatedAt)
+
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestClaimJobs_DefaultsNowAndTruncatesLease(t *testing.T) {
-	runner := storagetest.MustSQLMock(t)
-	defer runner.ExpectationsWereMet(t)
+	db, mock := storagetest.MustSQLMockWithRunner(t)
+	defer db.Close()
 
 	providerNow := time.Date(2032, 6, 7, 8, 9, 10, 500*1e6, time.FixedZone("PDT", -7*3600))
 	nowUTC := providerNow.UTC()
 	leaseDuration := 30*time.Second + 850*time.Millisecond
 	leaseUntil := nowUTC.Add(30 * time.Second)
 
-	store := &Store{DB: runner, now: func() time.Time { return providerNow }}
+	store := &Store{DB: NewDB(db), now: func() time.Time { return providerNow }}
 
 	ctx := context.Background()
 
@@ -74,7 +76,7 @@ func TestClaimJobs_DefaultsNowAndTruncatesLease(t *testing.T) {
 		leaseUntil, "wk", nil, nil, nowUTC, nowUTC,
 	)
 
-	runner.Mock.ExpectQuery(claimSQL).
+	mock.ExpectQuery(claimSQL).
 		WithArgs("default", "wk", 1, leaseUntil, nowUTC, false).
 		WillReturnRows(rows)
 
@@ -93,4 +95,6 @@ func TestClaimJobs_DefaultsNowAndTruncatesLease(t *testing.T) {
 	storagetest.AssertUTC(t, job.RunAt)
 	storagetest.AssertUTC(t, job.CreatedAt)
 	storagetest.AssertUTC(t, job.UpdatedAt)
+
+	require.NoError(t, mock.ExpectationsWereMet())
 }

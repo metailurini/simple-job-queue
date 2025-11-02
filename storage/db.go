@@ -5,11 +5,9 @@ import (
 	"database/sql"
 )
 
-// DB is a minimal interface capturing the subset of *sql.DB methods used by
+// DB is a minimal interface capturing the subset of database methods used by
 // this project. The interface is intentionally small and focuses on the query
-// execution methods. Since *sql.DB.BeginTx returns *sql.Tx (not an interface),
-// we provide a thin adapter wrapper to convert between concrete and interface
-// types while preserving testability.
+// execution methods needed by the storage layer.
 type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -18,15 +16,30 @@ type DB interface {
 	Close() error
 }
 
-// Tx mirrors the subset of *sql.Tx methods used across the storage layer and
-// worker/scheduler packages. This interface enables testing with fakes and
-// sqlmock while production code uses the concrete *sql.Tx.
+// Tx mirrors the subset of transaction methods used across the storage layer.
+// This interface enables testing with fakes and sqlmock while production code
+// uses the concrete *sql.Tx.
 type Tx interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	Commit() error
 	Rollback() error
+}
+
+// Row is a minimal interface for scanning a single row result. This allows
+// both *sql.Row and pgx.Row to be used interchangeably during the migration.
+type Row interface {
+	Scan(dest ...any) error
+}
+
+// Rows is a minimal interface for iterating over query results. This allows
+// both *sql.Rows and pgx.Rows to be used interchangeably during the migration.
+type Rows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Close() error
+	Err() error
 }
 
 // dbAdapter wraps *sql.DB to implement the storage.DB interface. The only
