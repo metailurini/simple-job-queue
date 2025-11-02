@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/metailurini/simple-job-queue/apperrors"
 	"github.com/metailurini/simple-job-queue/timeprovider"
@@ -42,18 +41,18 @@ type Store struct {
 }
 
 // NewStore builds a Store.
-func NewStore(pool *pgxpool.Pool, nowFn func() time.Time) (*Store, error) {
-	if pool == nil {
+func NewStore(db dbRunner, nowFn func() time.Time) (*Store, error) {
+	if db == nil {
 		return nil, fmt.Errorf("pgx pool is required: %w", apperrors.ErrNotConfigured)
 	}
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &Store{DB: pool, now: nowFn}, nil
+	return &Store{DB: db, now: nowFn}, nil
 }
 
 // NewStoreWithProvider builds a Store using the supplied time provider.
-func NewStoreWithProvider(pool *pgxpool.Pool, provider timeprovider.Provider) (*Store, error) {
+func NewStoreWithProvider(pool dbRunner, provider timeprovider.Provider) (*Store, error) {
 	if provider == nil {
 		provider = timeprovider.RealProvider{}
 	}
