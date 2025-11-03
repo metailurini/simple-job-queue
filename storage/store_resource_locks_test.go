@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
@@ -22,10 +23,7 @@ func TestAcquireResource_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Expect INSERT returning 1 row affected
-	mock.ExpectExec(`
-INSERT INTO queue_resource_locks \(resource_key, job_id, worker_id, created_at\)
-VALUES \(\$1, \$2, \$3, \$4\)
-ON CONFLICT \(resource_key\) DO NOTHING;`).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)\nVALUES ($1, $2, $3, $4)\nON CONFLICT (resource_key) DO NOTHING;")).
 		WithArgs("order:123", int64(42), "worker-1", now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -45,10 +43,7 @@ func TestAcquireResource_Conflict(t *testing.T) {
 	require.NoError(t, err)
 
 	// ON CONFLICT DO NOTHING → 0 rows affected
-	mock.ExpectExec(`
-INSERT INTO queue_resource_locks \(resource_key, job_id, worker_id, created_at\)
-VALUES \(\$1, \$2, \$3, \$4\)
-ON CONFLICT \(resource_key\) DO NOTHING;`).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)\nVALUES ($1, $2, $3, $4)\nON CONFLICT (resource_key) DO NOTHING;")).
 		WithArgs("order:123", int64(42), "worker-1", now).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -83,10 +78,7 @@ func TestAcquireResource_NormalizesNonUTCTimezone(t *testing.T) {
 	require.NoError(t, err)
 
 	// Expect the time to be normalized to UTC in the SQL args
-	mock.ExpectExec(`
-INSERT INTO queue_resource_locks \(resource_key, job_id, worker_id, created_at\)
-VALUES \(\$1, \$2, \$3, \$4\)
-ON CONFLICT \(resource_key\) DO NOTHING;`).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)\nVALUES ($1, $2, $3, $4)\nON CONFLICT (resource_key) DO NOTHING;")).
 		WithArgs("order:456", int64(99), "worker-2", expectedUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -106,10 +98,7 @@ func TestAcquireResource_ExecutionError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate a database error (e.g., connection failure)
-	mock.ExpectExec(`
-INSERT INTO queue_resource_locks \(resource_key, job_id, worker_id, created_at\)
-VALUES \(\$1, \$2, \$3, \$4\)
-ON CONFLICT \(resource_key\) DO NOTHING;`).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)\nVALUES ($1, $2, $3, $4)\nON CONFLICT (resource_key) DO NOTHING;")).
 		WithArgs("order:789", int64(50), "worker-3", now).
 		WillReturnError(sqlmock.ErrCancelled)
 
@@ -128,9 +117,7 @@ func TestReleaseResource_Success(t *testing.T) {
 	store, err := NewStore(db, time.Now)
 	require.NoError(t, err)
 
-	mock.ExpectExec(`
-DELETE FROM queue_resource_locks
-WHERE resource_key = \$1 AND job_id = \$2;`).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM queue_resource_locks\nWHERE resource_key = $1 AND job_id = $2;")).
 		WithArgs("order:123", int64(42)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -148,9 +135,7 @@ func TestReleaseResource_NotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete returns 0 rows affected when resource not found
-	mock.ExpectExec(`
-DELETE FROM queue_resource_locks
-WHERE resource_key = \$1 AND job_id = \$2;`).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM queue_resource_locks\nWHERE resource_key = $1 AND job_id = $2;")).
 		WithArgs("order:999", int64(100)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -183,9 +168,7 @@ func TestReleaseResource_ExecutionError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate a database error
-	mock.ExpectExec(`
-DELETE FROM queue_resource_locks
-WHERE resource_key = \$1 AND job_id = \$2;`).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM queue_resource_locks\nWHERE resource_key = $1 AND job_id = $2;")).
 		WithArgs("order:error", int64(200)).
 		WillReturnError(sqlmock.ErrCancelled)
 

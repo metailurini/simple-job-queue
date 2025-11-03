@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"regexp"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func TestEnqueueJob_DefaultsRunAtAndSerializesTZ(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return providerNow })
 	require.NoError(t, err)
 
-	mock.ExpectQuery("INSERT INTO queue_jobs \\(queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key\\) VALUES \\(\\$1,\\$2,\\$3,\\$4,\\$5,\\$6,\\$7,\\$8,\\$9\\) ON CONFLICT DO NOTHING RETURNING id;").
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING id;")).
 		WithArgs("default", "send-email", []byte("{}"), 0, expectedUTC, 20, 10, nil, nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
 
@@ -74,7 +75,7 @@ func TestHeartbeatJob_TruncatesExtendToSeconds(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return base })
 	require.NoError(t, err)
 
-	mock.ExpectExec("UPDATE queue_jobs\nSET lease_until = \\$3,\n    updated_at  = \\$4\nWHERE id=\\$1 AND worker_id=\\$2;").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE queue_jobs\nSET lease_until = $3,\n    updated_at  = $4\nWHERE id=$1 AND worker_id=$2;")).
 		WithArgs(int64(77), "wk", leaseUntil, baseUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -97,7 +98,7 @@ func TestHeartbeatJob_ReturnsErrLeaseMismatchOnZeroRows(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return base })
 	require.NoError(t, err)
 
-	mock.ExpectExec("UPDATE queue_jobs\nSET lease_until = \\$3,\n    updated_at  = \\$4\nWHERE id=\\$1 AND worker_id=\\$2;").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE queue_jobs\nSET lease_until = $3,\n    updated_at  = $4\nWHERE id=$1 AND worker_id=$2;")).
 		WithArgs(int64(1), "worker", baseUTC.Add(10*time.Second), baseUTC).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -119,7 +120,7 @@ func TestRequeueJob_DefaultsRunAtToProviderUTC(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return now })
 	require.NoError(t, err)
 
-	mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=\\$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=\\$4\nWHERE id=\\$1 AND worker_id=\\$2;").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;")).
 		WithArgs(int64(55), "worker-1", nowUTC, nowUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -144,7 +145,7 @@ func TestRequeueJob_UsesProvidedRunAtAndNormalizes(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return now })
 	require.NoError(t, err)
 
-	mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=\\$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=\\$4\nWHERE id=\\$1 AND worker_id=\\$2;").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;")).
 		WithArgs(int64(56), "worker-2", runAtUTC, nowUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -167,7 +168,7 @@ func TestRequeueJob_ReturnsErrLeaseMismatchOnZeroRows(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return now })
 	require.NoError(t, err)
 
-	mock.ExpectExec("UPDATE queue_jobs\nSET status='queued',\n    run_at=\\$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=\\$4\nWHERE id=\\$1 AND worker_id=\\$2;").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE queue_jobs\nSET status='queued',\n    run_at=$3,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2;")).
 		WithArgs(int64(57), "worker-3", nowUTC, nowUTC).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -191,14 +192,14 @@ func TestFailJob_RecordsFailureAndCommits(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return base })
 	require.NoError(t, err)
 
-	updateSQL := "UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE \\$3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=\\$4\nWHERE id=\\$1 AND worker_id=\\$2\nRETURNING attempts, status;"
+	updateSQL := regexp.QuoteMeta("UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;")
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(updateSQL).
 		WithArgs(int64(88), "worker", nextRunUTC, baseUTC).
 		WillReturnRows(sqlmock.NewRows([]string{"attempts", "status"}).AddRow(2, "queued"))
 
-	mock.ExpectExec("INSERT INTO queue_job_failures \\(job_id, error, attempts, failed_at\\)\nVALUES \\(\\$1, \\$2, \\$3, \\$4\\);").
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO queue_job_failures (job_id, error, attempts, failed_at)\nVALUES ($1, $2, $3, $4);")).
 		WithArgs(int64(88), "boom", 2, baseUTC).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -224,7 +225,7 @@ func TestFailJob_ReturnsErrLeaseMismatch(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return base })
 	require.NoError(t, err)
 
-	updateSQL := "UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE \\$3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=\\$4\nWHERE id=\\$1 AND worker_id=\\$2\nRETURNING attempts, status;"
+	updateSQL := regexp.QuoteMeta("UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;")
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(updateSQL).
