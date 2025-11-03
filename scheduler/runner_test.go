@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -122,7 +123,8 @@ FROM queue_schedules;
 	}
 	expectedLast := enqueueTimes[len(enqueueTimes)-1]
 
-	mock.ExpectExec("UPDATE queue_schedules SET last_enqueued_at=\\$2 WHERE id=\\$1 AND \\(last_enqueued_at IS NOT DISTINCT FROM \\$3\\)").
+	// Use regexp.QuoteMeta to avoid having to escape regex metacharacters in SQL
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE queue_schedules SET last_enqueued_at=$2 WHERE id=$1 AND (last_enqueued_at IS NOT DISTINCT FROM $3)")).
 		WithArgs(int64(10), expectedLast, initialLast).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
