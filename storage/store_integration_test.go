@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/metailurini/simple-job-queue/timeprovider"
 )
@@ -51,42 +52,45 @@ func newTestStore(t *testing.T, fixed time.Time) (*Store, func()) {
 
 func newTestStoreWithProvider(t *testing.T, provider timeprovider.Provider) (*Store, func()) {
 	t.Helper()
-	pool := mustConnectTestDB(t)
-	resetTestTables(t, pool)
+	db := mustConnectTestDB(t)
+	resetTestTables(t, db)
 
-	store, err := NewStoreWithProvider(pool, provider)
+	store, err := NewStoreWithProvider(db, provider)
 	if err != nil {
 		t.Fatalf("failed to build store: %v", err)
 	}
 
 	cleanup := func() {
-		resetTestTables(t, pool)
-		pool.Close()
+		resetTestTables(t, db)
+		db.Close()
 	}
 
 	return store, cleanup
 }
 
-func mustConnectTestDB(t *testing.T) *pgxpool.Pool {
+func mustConnectTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv(testDatabaseEnv)
 	if dsn == "" {
 		t.Skipf("set %s to run storage integration tests", testDatabaseEnv)
 	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		t.Skipf("connect test db: %v", err)
 	}
-	return pool
+	return db
 }
 
-func resetTestTables(t *testing.T, pool *pgxpool.Pool) {
+func resetTestTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := pool.Exec(ctx, "TRUNCATE queue_job_failures, queue_jobs RESTART IDENTITY"); err != nil {
+	if _, err := db.ExecContext(ctx, "TRUNCATE queue_job_failures, queue_jobs RESTART IDENTITY"); err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
 }
@@ -665,7 +669,7 @@ func TestFailJob_InsertsFailureRecordAndIncrementsAttempts(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1", job.Attempts)
 	}
 
-	rows, err := store.DB.Query(ctx, "SELECT error, failed_at FROM queue_job_failures WHERE job_id = $1", id)
+	rows, err := store.DB.QueryContext(ctx, "SELECT error, failed_at FROM queue_job_failures WHERE job_id = $1", id)
 	if err != nil {
 		t.Fatalf("query failures: %v", err)
 	}

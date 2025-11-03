@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -16,6 +16,9 @@ import (
 
 // TestNewRunner validates the constructor with various configurations.
 func TestNewRunner(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	tests := []struct {
 		name    string
 		cfg     Config
@@ -77,7 +80,7 @@ func TestNewRunner(t *testing.T) {
 				require.Error(t, err)
 				return
 			}
-			r, err := NewRunner(&pgxpool.Pool{}, tt.cfg)
+			r, err := NewRunner(db, tt.cfg)
 			require.NoError(t, err)
 			require.NotNil(t, r)
 			assert.Equal(t, tt.wantCfg.Interval, r.cfg.Interval)
@@ -89,23 +92,29 @@ func TestNewRunner(t *testing.T) {
 
 // TestNewRunner_CustomLogger verifies that a custom logger is used when provided.
 func TestNewRunner_CustomLogger(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	customLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := Config{
 		Logger: customLogger,
 	}
-	runner, err := NewRunner(&pgxpool.Pool{}, cfg)
+	runner, err := NewRunner(db, cfg)
 	require.NoError(t, err)
 	assert.Equal(t, customLogger, runner.logger)
 }
 
 // TestNewRunner_TimeProvider verifies that the TimeProvider is properly set.
 func TestNewRunner_TimeProvider(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	fixedTime := time.Date(2025, 10, 31, 12, 0, 0, 0, time.UTC)
 	provider := timeprovider.FixedProvider{T: fixedTime}
 	cfg := Config{
 		TimeProvider: provider,
 	}
-	runner, err := NewRunner(&pgxpool.Pool{}, cfg)
+	runner, err := NewRunner(db, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, runner.now)
 
@@ -116,8 +125,11 @@ func TestNewRunner_TimeProvider(t *testing.T) {
 
 // TestNewRunner_DefaultTimeProvider verifies that RealProvider is used by default.
 func TestNewRunner_DefaultTimeProvider(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	cfg := Config{}
-	runner, err := NewRunner(&pgxpool.Pool{}, cfg)
+	runner, err := NewRunner(db, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, runner.now)
 
@@ -129,34 +141,29 @@ func TestNewRunner_DefaultTimeProvider(t *testing.T) {
 // TestCleanup_NoStaleRows verifies that cleanup succeeds when no rows match by
 // injecting a mock exec function into the runner.
 func TestCleanup_NoStaleRows(t *testing.T) {
-	called := false
-	// Mock exec returns 0 rows affected
-	exec := func(ctx context.Context, sql string, args ...interface{}) (int64, error) {
-		called = true
-		return 0, nil
-	}
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	cfg := Config{
 		Interval:     1 * time.Minute,
 		MaxAge:       5 * time.Minute,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TimeProvider: timeprovider.RealProvider{},
 	}
-	r := &Runner{exec: exec, cfg: cfg, logger: cfg.Logger, now: cfg.TimeProvider.Now}
+	r, err := NewRunner(db, cfg)
+	require.NoError(t, err)
+	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnResult(sqlmock.NewResult(0, 0))
 	// Call cleanup directly
 	_ = r.cleanup(context.Background())
-	assert.True(t, called, "exec should be invoked")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 // TestCleanup_Boundary verifies that the cutoff boundary uses <= and passes
 // the expected cutoff value to the exec function.
 func TestCleanup_Boundary(t *testing.T) {
-	var gotArg interface{}
-	exec := func(ctx context.Context, sql string, args ...interface{}) (int64, error) {
-		if len(args) > 0 {
-			gotArg = args[0]
-		}
-		return 1, nil
-	}
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	fixedTime := time.Date(2025, 10, 31, 12, 0, 0, 0, time.UTC)
 	provider := timeprovider.FixedProvider{T: fixedTime}
 	cfg := Config{
@@ -165,23 +172,19 @@ func TestCleanup_Boundary(t *testing.T) {
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TimeProvider: provider,
 	}
-	r := &Runner{exec: exec, cfg: cfg, logger: cfg.Logger, now: cfg.TimeProvider.Now}
-	_ = r.cleanup(context.Background())
-	// expected cutoff is fixedTime.Add(-MaxAge)
+	r, err := NewRunner(db, cfg)
+	require.NoError(t, err)
 	expected := fixedTime.UTC().Add(-cfg.MaxAge)
-	if gotArg == nil {
-		t.Fatalf("expected cutoff arg, got nil")
-	}
-	// assert time roughly equal
-	gotTime, ok := gotArg.(time.Time)
-	if !ok {
-		t.Fatalf("expected time arg, got %T", gotArg)
-	}
-	assert.Equal(t, expected, gotTime)
+	mock.ExpectExec("DELETE FROM queue_resource_locks").WithArgs(expected).WillReturnResult(sqlmock.NewResult(0, 1))
+	_ = r.cleanup(context.Background())
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 // TestRun_ContextCancellation verifies that Run exits when the context is canceled.
 func TestRun_ContextCancellation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	// For this test, we immediately cancel the context before the ticker fires
 	// so we don't need a real pool connection
 	cfg := Config{
@@ -189,13 +192,10 @@ func TestRun_ContextCancellation(t *testing.T) {
 		MaxAge:   1 * time.Minute,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	runner, err := NewRunner(&pgxpool.Pool{}, cfg)
+	runner, err := NewRunner(db, cfg)
 	require.NoError(t, err)
 
-	// Mock the exec function to avoid a panic from the nil pool.
-	runner.exec = func(ctx context.Context, sql string, args ...interface{}) (int64, error) {
-		return 0, nil
-	}
+	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -219,19 +219,19 @@ func TestRun_ContextCancellation(t *testing.T) {
 
 // TestRun_ContextTimeout verifies that Run exits when the context times out.
 func TestRun_ContextTimeout(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 	// Using a very short timeout that expires before the ticker fires
 	cfg := Config{
 		Interval: 10 * time.Second, // Long interval to ensure ticker doesn't fire
 		MaxAge:   1 * time.Minute,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	runner, err := NewRunner(&pgxpool.Pool{}, cfg)
+	runner, err := NewRunner(db, cfg)
 	require.NoError(t, err)
 
-	// Mock the exec function to avoid a panic from the nil pool.
-	runner.exec = func(ctx context.Context, sql string, args ...interface{}) (int64, error) {
-		return 0, nil
-	}
+	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

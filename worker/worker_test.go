@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"math/rand"
@@ -9,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,12 +19,17 @@ import (
 )
 
 func TestNewRunnerAppliesDefaults(t *testing.T) {
-	store := &storage.Store{}
-	pool := &pgxpool.Pool{}
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	store, err := storage.NewStore(db, time.Now)
+	require.NoError(t, err)
+
 	handlers := HandlerMap{"task": func(context.Context, storage.Job) error { return nil }}
 	cfg := Config{Queues: []QueueConfig{{Name: "default"}}}
 
-	runner, err := NewRunner(store, pool, handlers, cfg)
+	runner, err := NewRunner(store, db, handlers, cfg)
 	require.NoError(t, err)
 	require.NotEmpty(t, runner.cfg.WorkerID, "expected worker id to be generated")
 	assert.Equal(t, 1, runner.cfg.Queues[0].BatchSize, "expected batch size default 1")
@@ -36,42 +42,47 @@ func TestNewRunnerAppliesDefaults(t *testing.T) {
 }
 
 func TestNewRunnerValidation(t *testing.T) {
-	pool := &pgxpool.Pool{}
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	store, err := storage.NewStore(db, time.Now)
+	require.NoError(t, err)
+
 	handler := HandlerMap{"task": func(context.Context, storage.Job) error { return nil }}
 	queue := []QueueConfig{{Name: "default"}}
 
 	tests := []struct {
 		name    string
-		store   *storage.Store
-		p       *pgxpool.Pool
+		store   jobStore
+		db      *sql.DB
 		h       HandlerMap
 		queues  []QueueConfig
 		wantErr string
 	}{{
-		name:    "missing pool",
-		store:   &storage.Store{},
-		p:       nil,
+		name:    "missing db",
+		store:   store,
+		db:      nil,
 		h:       handler,
 		queues:  queue,
-		wantErr: "pgx pool is required",
+		wantErr: "database is required",
 	}, {
 		name:    "no handlers",
-		store:   &storage.Store{},
-		p:       pool,
+		store:   store,
+		db:      db,
 		h:       HandlerMap{},
 		queues:  queue,
 		wantErr: "at least one handler is required",
 	}, {
 		name:    "no queues",
-		store:   &storage.Store{},
-		p:       pool,
+		store:   store,
+		db:      db,
 		h:       handler,
 		queues:  nil,
 		wantErr: "at least one queue is required",
 	}, {
 		name:    "queue missing name",
-		store:   &storage.Store{},
-		p:       pool,
+		store:   store,
+		db:      db,
 		h:       handler,
 		queues:  []QueueConfig{{}},
 		wantErr: "queue[0] requires a name",
@@ -79,8 +90,8 @@ func TestNewRunnerValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewRunner(tt.store, tt.p, tt.h, Config{Queues: tt.queues})
-			if tt.wantErr == "store is required" || tt.wantErr == "pgx pool is required" {
+			_, err := NewRunner(tt.store, tt.db, tt.h, Config{Queues: tt.queues})
+			if tt.wantErr == "store is required" || tt.wantErr == "database is required" {
 				require.ErrorIs(t, err, apperrors.ErrNotConfigured)
 			} else {
 				require.Error(t, err)

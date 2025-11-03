@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"log/slog"
@@ -10,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/metailurini/simple-job-queue/diag"
 	"github.com/metailurini/simple-job-queue/janitor"
@@ -55,15 +56,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, *dsn)
+	db, err := sql.Open("pgx", *dsn)
 	if err != nil {
-		logger.Error("failed to init pgx pool", "err", err)
+		logger.Error("failed to init db", "err", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer db.Close()
 
 	provider := timeprovider.RealProvider{}
-	store, err := storage.NewStoreWithProvider(pool, provider)
+	store, err := storage.NewStoreWithProvider(db, provider)
 	if err != nil {
 		logger.Error("failed to build store", "err", err)
 		os.Exit(1)
@@ -98,14 +99,14 @@ func main() {
 		},
 	}
 
-	runner, err := worker.NewRunner(store, pool, handlers, workerCfg)
+	runner, err := worker.NewRunner(store, db, handlers, workerCfg)
 	if err != nil {
 		logger.Error("failed to build worker", "err", err)
 		os.Exit(1)
 	}
 
 	// record and log DB/app clock drift at startup
-	_, _ = diag.RecordClockDrift(ctx, pool, provider, logger)
+	_, _ = diag.RecordClockDrift(ctx, db, provider, logger)
 
 	// Start janitor in separate goroutine
 	// If janitorMaxAge was provided use it; otherwise default to 2× lease.
@@ -120,7 +121,7 @@ func main() {
 		Logger:       logger,
 		TimeProvider: provider,
 	}
-	j, err := janitor.NewRunner(pool, janitorCfg)
+	j, err := janitor.NewRunner(db, janitorCfg)
 	if err != nil {
 		logger.Error("failed to build janitor", "err", err)
 		os.Exit(1)

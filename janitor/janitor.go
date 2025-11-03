@@ -5,9 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/metailurini/simple-job-queue/apperrors"
+	"github.com/metailurini/simple-job-queue/storage"
 	"github.com/metailurini/simple-job-queue/timeprovider"
 )
 
@@ -20,23 +19,17 @@ type Config struct {
 	TimeProvider timeprovider.Provider
 }
 
-// execFunc is an injectable function type used to execute SQL and return
-// the number of rows affected. This indirection makes the janitor easy to
-// unit test without needing to import pgx-specific types in tests.
-type execFunc func(ctx context.Context, sql string, args ...interface{}) (int64, error)
-
 // Runner periodically deletes stale resource locks.
 type Runner struct {
-	pool   *pgxpool.Pool
-	exec   execFunc
+	db     storage.DB
 	cfg    Config
 	logger *slog.Logger
 	now    func() time.Time
 }
 
 // NewRunner constructs a janitor runner.
-func NewRunner(pool *pgxpool.Pool, cfg Config) (*Runner, error) {
-	if pool == nil {
+func NewRunner(db storage.DB, cfg Config) (*Runner, error) {
+	if db == nil {
 		return nil, apperrors.ErrNotConfigured
 	}
 	if cfg.Interval <= 0 {
@@ -53,20 +46,10 @@ func NewRunner(pool *pgxpool.Pool, cfg Config) (*Runner, error) {
 		cfg.TimeProvider = timeprovider.RealProvider{}
 	}
 	r := &Runner{
-		pool:   pool,
+		db:     db,
 		cfg:    cfg,
 		logger: logger,
 		now:    cfg.TimeProvider.Now,
-	}
-	// Default exec uses the underlying pgxpool.Pool Exec and converts the
-	// CommandTag to an int64 rows affected. This keeps pgx types out of the
-	// janitor tests while still using the real pool in production.
-	r.exec = func(ctx context.Context, sql string, args ...interface{}) (int64, error) {
-		tag, err := pool.Exec(ctx, sql, args...)
-		if err != nil {
-			return 0, err
-		}
-		return tag.RowsAffected(), nil
 	}
 	return r, nil
 }
@@ -122,9 +105,14 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) cleanup(ctx context.Context) bool {
 	cutoff := r.now().UTC().Add(-r.cfg.MaxAge)
 	// Use <= to include locks created exactly at the cutoff boundary.
-	affected, err := r.exec(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 DELETE FROM queue_resource_locks
 WHERE created_at <= $1;`, cutoff)
+	if err != nil {
+		r.logger.Error("janitor cleanup failed", "err", err)
+		return false
+	}
+	affected, err := res.RowsAffected()
 	if err != nil {
 		r.logger.Error("janitor cleanup failed", "err", err)
 		return false
