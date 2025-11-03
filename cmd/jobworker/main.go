@@ -63,6 +63,21 @@ func main() {
 	}
 	defer db.Close()
 
+	// Verify that the DB is reachable and the DSN is valid. sql.Open does not
+	// establish connections by itself, so we ping the database to fail fast on
+	// misconfiguration.
+	if err := db.PingContext(ctx); err != nil {
+		logger.Error("failed to connect to db", "err", err)
+		os.Exit(1)
+	}
+
+	// Configure connection pool limits to sensible defaults. Consider exposing
+	// these via flags if callers need to tune them for different environments.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
 	provider := timeprovider.RealProvider{}
 	store, err := storage.NewStoreWithProvider(db, provider)
 	if err != nil {
