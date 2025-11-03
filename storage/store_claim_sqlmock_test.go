@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestClaimJobs_UsesProvidedNowAndLeaseOrder(t *testing.T) {
 		leaseUTC, "worker-1", nil, nil, nowUTC, nowUTC,
 	)
 
-	mock.ExpectQuery("WITH candidates AS \\( SELECT id FROM queue_jobs WHERE queue = \\$1 AND \\( \\(status = 'queued' AND run_at <= \\$5\\) OR \\(\\$6 AND status = 'running' AND lease_until < \\$5\\) \\) ORDER BY priority DESC, run_at ASC, id ASC LIMIT \\$3 \\), updated AS \\( UPDATE queue_jobs j SET status = 'running', worker_id = \\$2, attempts = j.attempts \\+ 1, lease_until = \\$4, updated_at = \\$5 FROM candidates c WHERE j.id = c.id AND \\( \\(j.status = 'queued' AND j.run_at <= \\$5\\) OR \\(\\$6 AND j.status = 'running' AND j.lease_until < \\$5\\) \\) RETURNING j.\\* \\) SELECT id, queue, task_type, payload, priority, run_at, status, attempts, max_attempts, backoff_sec, lease_until, worker_id, dedupe_key, resource_key, created_at, updated_at FROM updated ORDER BY priority DESC, run_at ASC, id ASC;").
+	mock.ExpectQuery(regexp.QuoteMeta(claimSQL)).
 		WithArgs("emails", "worker-1", 2, leaseUTC, nowUTC, true).
 		WillReturnRows(rows)
 
@@ -78,7 +79,7 @@ func TestClaimJobs_DefaultsNowAndTruncatesLease(t *testing.T) {
 		leaseUntil, "wk", nil, nil, nowUTC, nowUTC,
 	)
 
-	mock.ExpectQuery("WITH candidates AS \\( SELECT id FROM queue_jobs WHERE queue = \\$1 AND \\( \\(status = 'queued' AND run_at <= \\$5\\) OR \\(\\$6 AND status = 'running' AND lease_until < \\$5\\) \\) ORDER BY priority DESC, run_at ASC, id ASC LIMIT \\$3 \\), updated AS \\( UPDATE queue_jobs j SET status = 'running', worker_id = \\$2, attempts = j.attempts \\+ 1, lease_until = \\$4, updated_at = \\$5 FROM candidates c WHERE j.id = c.id AND \\( \\(j.status = 'queued' AND j.run_at <= \\$5\\) OR \\(\\$6 AND j.status = 'running' AND j.lease_until < \\$5\\) \\) RETURNING j.\\* \\) SELECT id, queue, task_type, payload, priority, run_at, status, attempts, max_attempts, backoff_sec, lease_until, worker_id, dedupe_key, resource_key, created_at, updated_at FROM updated ORDER BY priority DESC, run_at ASC, id ASC;").
+	mock.ExpectQuery(regexp.QuoteMeta(claimSQL)).
 		WithArgs("default", "wk", 1, leaseUntil, nowUTC, false).
 		WillReturnRows(rows)
 

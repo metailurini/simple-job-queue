@@ -132,53 +132,53 @@ func TestJanitor_Shutdown_Integration(t *testing.T) {
 
 // TestJanitor_Shutdown_AbortsOnLongCleanup verifies that shutdown aborts
 // when cleanup exceeds the grace period.
-// func TestJanitor_Shutdown_AbortsOnLongCleanup(t *testing.T) {
-// 	db, mock, err := sqlmock.New()
-// 	require.NoError(t, err)
-// 	defer db.Close()
+func TestJanitor_Shutdown_AbortsOnLongCleanup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
 
-// 	var buf bytes.Buffer
-// 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-// 	gracePeriod := 100 * time.Millisecond
-// 	cleanupDuration := 200 * time.Millisecond
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	gracePeriod := 100 * time.Millisecond
+	cleanupDuration := 200 * time.Millisecond
 
-// 	cfg := Config{
-// 		Interval:    10 * time.Second,
-// 		GracePeriod: gracePeriod,
-// 		Logger:      logger,
-// 	}
-// 	runner, err := NewRunner(db, cfg)
-// 	require.NoError(t, err)
-// 	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnResult(sqlmock.NewResult(0, 0)).WillDelay(cleanupDuration)
+	cfg := Config{
+		Interval:    10 * time.Second,
+		GracePeriod: gracePeriod,
+		Logger:      logger,
+	}
+	runner, err := NewRunner(db, cfg)
+	require.NoError(t, err)
+	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnResult(sqlmock.NewResult(0, 0)).WillDelayFor(cleanupDuration)
 
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
 
-// 	go func() {
-// 		done <- runner.Run(ctx)
-// 	}()
+	go func() {
+		done <- runner.Run(ctx)
+	}()
 
-// 	// Allow the runner to start
-// 	time.Sleep(50 * time.Millisecond)
+	// Allow the runner to start
+	time.Sleep(50 * time.Millisecond)
 
-// 	// Trigger shutdown
-// 	cancel()
+	// Trigger shutdown
+	cancel()
 
-// 	select {
-// 	case err := <-done:
-// 		assert.ErrorIs(t, err, context.Canceled)
-// 	case <-time.After(gracePeriod + cleanupDuration):
-// 		t.Fatal("runner did not shut down as expected")
-// 	}
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(gracePeriod + cleanupDuration):
+		t.Fatal("runner did not shut down as expected")
+	}
 
-// 	// Verify log output
-// 	t.Log(buf.String())
-// 	logStr := buf.String()
-// 	assert.Contains(t, logStr, `"msg":"janitor shutdown started"`)
-// 	assert.Contains(t, logStr, `"status":"started"`)
-// 	assert.Contains(t, logStr, `"msg":"janitor shutdown aborted: grace period exceeded"`)
-// 	assert.Contains(t, logStr, `"status":"aborted"`)
-// }
+	// Verify log output
+	t.Log(buf.String())
+	logStr := buf.String()
+	assert.Contains(t, logStr, `"msg":"janitor shutdown started"`)
+	assert.Contains(t, logStr, `"status":"started"`)
+	assert.Contains(t, logStr, `"msg":"janitor shutdown aborted: grace period exceeded"`)
+	assert.Contains(t, logStr, `"status":"aborted"`)
+}
 
 // TestJanitor_Shutdown_DBErrorOnCleanup verifies that a DB error during the
 // final cleanup does not prevent shutdown.
