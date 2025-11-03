@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+var ErrUnsupportedDriver = errors.New("unexpected driver connection type")
 
 type listenAcquire interface {
 	Acquire(ctx context.Context) (listenConn, error)
@@ -48,7 +51,7 @@ func extractPgxConn(driverConn any) (*pgx.Conn, error) {
 	}
 	// Unexpected type
 	slog.Warn("unexpected driver connection type; ensure using pgx stdlib driver", "type", fmt.Sprintf("%T", driverConn))
-	return nil, fmt.Errorf("unexpected driver connection type %T", driverConn)
+	return nil, fmt.Errorf("%w: %T", ErrUnsupportedDriver, driverConn)
 }
 
 func (p *poolListenConn) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
