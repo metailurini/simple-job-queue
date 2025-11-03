@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -85,7 +85,8 @@ func setupTestRunner(t *testing.T, mockStore *mockJobStore, handlers HandlerMap)
 			"test": func(ctx context.Context, job storage.Job) error { return nil },
 		}
 	}
-	pool := &pgxpool.Pool{} // Mock pool, not used in these tests
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
 	cfg := Config{
 		WorkerID:              "test-worker",
 		Queues:                []QueueConfig{{Name: "default", LeaseDuration: 30 * time.Second, BatchSize: 1}},
@@ -97,7 +98,10 @@ func setupTestRunner(t *testing.T, mockStore *mockJobStore, handlers HandlerMap)
 		TimeProvider:          timeprovider.RealProvider{},
 	}
 
-	runner, err := NewRunner(&storage.Store{}, pool, handlers, cfg)
+	store, err := storage.NewStore(db, time.Now)
+	require.NoError(t, err)
+
+	runner, err := NewRunner(store, db, handlers, cfg)
 	require.NoError(t, err)
 	// Replace the store with our mock
 	runner.store = mockStore

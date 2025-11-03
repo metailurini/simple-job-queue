@@ -2,13 +2,14 @@ package worker
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type listenAcquire interface {
@@ -22,11 +23,11 @@ type listenConn interface {
 }
 
 type poolListenAcquire struct {
-	pool *pgxpool.Pool
+	db *sql.DB
 }
 
 func (p poolListenAcquire) Acquire(ctx context.Context) (listenConn, error) {
-	conn, err := p.pool.Acquire(ctx)
+	conn, err := p.db.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -34,19 +35,33 @@ func (p poolListenAcquire) Acquire(ctx context.Context) (listenConn, error) {
 }
 
 type poolListenConn struct {
-	conn *pgxpool.Conn
+	conn *sql.Conn
 }
 
 func (p *poolListenConn) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	return p.conn.Exec(ctx, sql, args...)
+	var tag pgconn.CommandTag
+	err := p.conn.Raw(func(driverConn any) error {
+		pgxConn := driverConn.(*stdlib.Conn).Conn()
+		var err error
+		tag, err = pgxConn.Exec(ctx, sql, args...)
+		return err
+	})
+	return tag, err
 }
 
 func (p *poolListenConn) Release() {
-	p.conn.Release()
+	_ = p.conn.Close()
 }
 
 func (p *poolListenConn) WaitForNotification(ctx context.Context) (*pgconn.Notification, error) {
-	return p.conn.Conn().WaitForNotification(ctx)
+	var notification *pgconn.Notification
+	err := p.conn.Raw(func(driverConn any) error {
+		pgxConn := driverConn.(*stdlib.Conn).Conn()
+		var err error
+		notification, err = pgxConn.WaitForNotification(ctx)
+		return err
+	})
+	return notification, err
 }
 
 type pgNotifier struct {
@@ -56,8 +71,8 @@ type pgNotifier struct {
 	updates chan struct{}
 }
 
-func newPGNotifier(ctx context.Context, pool *pgxpool.Pool, queues []QueueConfig, logger *slog.Logger) (*pgNotifier, error) {
-	return newPGNotifierWithAcquire(ctx, poolListenAcquire{pool: pool}, queues, logger)
+func newPGNotifier(ctx context.Context, db *sql.DB, queues []QueueConfig, logger *slog.Logger) (*pgNotifier, error) {
+	return newPGNotifierWithAcquire(ctx, poolListenAcquire{db: db}, queues, logger)
 }
 
 func newPGNotifierWithAcquire(ctx context.Context, pool listenAcquire, queues []QueueConfig, logger *slog.Logger) (*pgNotifier, error) {

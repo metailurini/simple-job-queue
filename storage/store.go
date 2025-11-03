@@ -8,9 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/metailurini/simple-job-queue/apperrors"
 	"github.com/metailurini/simple-job-queue/timeprovider"
 )
@@ -27,23 +24,16 @@ var ErrLeaseMismatch = errors.New("storage: job lease mismatch")
 // ErrResourceBusy indicates another worker holds the resource token.
 var ErrResourceBusy = errors.New("storage: resource busy")
 
-type dbRunner interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	Begin(ctx context.Context) (pgx.Tx, error)
-}
-
 // Store wraps a pgx connection helper and exposes job-centric helpers.
 type Store struct {
-	DB  dbRunner
+	DB  DB
 	now func() time.Time
 }
 
 // NewStore builds a Store.
-func NewStore(db dbRunner, nowFn func() time.Time) (*Store, error) {
+func NewStore(db DB, nowFn func() time.Time) (*Store, error) {
 	if db == nil {
-		return nil, fmt.Errorf("pgx pool is required: %w", apperrors.ErrNotConfigured)
+		return nil, fmt.Errorf("database is required: %w", apperrors.ErrNotConfigured)
 	}
 	if nowFn == nil {
 		nowFn = time.Now
@@ -52,7 +42,7 @@ func NewStore(db dbRunner, nowFn func() time.Time) (*Store, error) {
 }
 
 // NewStoreWithProvider builds a Store using the supplied time provider.
-func NewStoreWithProvider(pool dbRunner, provider timeprovider.Provider) (*Store, error) {
+func NewStoreWithProvider(pool DB, provider timeprovider.Provider) (*Store, error) {
 	if provider == nil {
 		provider = timeprovider.RealProvider{}
 	}
@@ -60,13 +50,8 @@ func NewStoreWithProvider(pool dbRunner, provider timeprovider.Provider) (*Store
 }
 
 // Begin delegates to the underlying DB runner's Begin if it supports it.
-func (s *Store) Begin(ctx context.Context) (pgx.Tx, error) {
-	if b, ok := s.DB.(interface {
-		Begin(ctx context.Context) (pgx.Tx, error)
-	}); ok {
-		return b.Begin(ctx)
-	}
-	return nil, fmt.Errorf("DB does not support Begin: %w", apperrors.ErrNotSupported)
+func (s *Store) Begin(ctx context.Context) (*sql.Tx, error) {
+	return s.DB.BeginTx(ctx, nil)
 }
 
 // Job represents the public projection returned by storage helpers.
@@ -231,7 +216,7 @@ func (s *Store) ClaimJobs(ctx context.Context, opts ClaimOptions) (ClaimResult, 
 	args[claimArgNow-1] = nowTS
 	args[claimArgIncludeLeased-1] = opts.IncludeLeased
 
-	rows, err := s.DB.Query(ctx, claimSQL, args...)
+	rows, err := s.DB.QueryContext(ctx, claimSQL, args...)
 	if err != nil {
 		return ClaimResult{}, err
 	}
@@ -339,7 +324,7 @@ func (s *Store) EnqueueJobs(ctx context.Context, params []EnqueueParams) ([]int6
 
 	sql := b.String()
 
-	rows, err := s.DB.Query(ctx, sql, args...)
+	rows, err := s.DB.QueryContext(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -361,10 +346,10 @@ func (s *Store) EnqueueJobs(ctx context.Context, params []EnqueueParams) ([]int6
 
 // GetJob loads a job by identifier.
 func (s *Store) GetJob(ctx context.Context, id int64) (Job, error) {
-	row := s.DB.QueryRow(ctx, selectJobSQL, id)
+	row := s.DB.QueryRowContext(ctx, selectJobSQL, id)
 	job, err := scanJob(row)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if IsNoRows(err) {
 			return Job{}, ErrJobNotFound
 		}
 		return Job{}, err
@@ -383,7 +368,11 @@ type ScheduleRow struct {
 	LastEnqueuedAt *time.Time
 }
 
-func ScanSchedule(row pgx.Row) (ScheduleRow, error) {
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func ScanSchedule(row scanner) (ScheduleRow, error) {
 	var (
 		s         ScheduleRow
 		payload   []byte
@@ -415,8 +404,8 @@ func ScanSchedule(row pgx.Row) (ScheduleRow, error) {
 // without locking the rows and returns the scanned rows.
 // Individual row scan failures are skipped to allow the scheduler to
 // continue processing other schedules in the same transaction.
-func (s *Store) FetchSchedulesTx(ctx context.Context, tx pgx.Tx) ([]ScheduleRow, error) {
-	rows, err := tx.Query(ctx, `
+func (s *Store) FetchSchedulesTx(ctx context.Context, tx Tx) ([]ScheduleRow, error) {
+	rows, err := tx.QueryContext(ctx, `
 SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
 FROM queue_schedules;
 `)
@@ -448,7 +437,7 @@ FROM queue_schedules;
 func (s *Store) CompleteJob(ctx context.Context, id int64, workerID string) error {
 	nowTS := s.now().UTC()
 
-	tag, err := s.DB.Exec(ctx, `
+	res, err := s.DB.ExecContext(ctx, `
 UPDATE queue_jobs
 SET status='succeeded',
     worker_id=NULL,
@@ -458,7 +447,11 @@ WHERE id=$1 AND worker_id=$2;`, id, workerID, nowTS)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if aff == 0 {
 		return ErrLeaseMismatch
 	}
 	return nil
@@ -473,7 +466,7 @@ func (s *Store) HeartbeatJob(ctx context.Context, id int64, workerID string, ext
 	extendDur := (extend / time.Second) * time.Second
 	leaseUntil := nowTS.Add(extendDur)
 
-	tag, err := s.DB.Exec(ctx, `
+	res, err := s.DB.ExecContext(ctx, `
 UPDATE queue_jobs
 SET lease_until = $3,
     updated_at  = $4
@@ -481,7 +474,11 @@ WHERE id=$1 AND worker_id=$2;`, id, workerID, leaseUntil, nowTS)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if aff == 0 {
 		return ErrLeaseMismatch
 	}
 	return nil
@@ -495,7 +492,7 @@ func (s *Store) RequeueJob(ctx context.Context, id int64, workerID string, runAt
 		runAt = nowTS
 	}
 	runAt = runAt.UTC()
-	tag, err := s.DB.Exec(ctx, `
+	res, err := s.DB.ExecContext(ctx, `
 UPDATE queue_jobs
 SET status='queued',
     run_at=$3,
@@ -506,7 +503,11 @@ WHERE id=$1 AND worker_id=$2;`, id, workerID, runAt, nowTS)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if aff == 0 {
 		return ErrLeaseMismatch
 	}
 	return nil
@@ -530,8 +531,8 @@ func (s *Store) FailJob(ctx context.Context, id int64, workerID string, nextRun 
 		status   string
 	)
 
-	execErr := s.withTx(ctx, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `
+	execErr := s.withTx(ctx, func(tx Tx) error {
+		row := tx.QueryRowContext(ctx, `
 UPDATE queue_jobs
 SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,
     run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,
@@ -542,13 +543,13 @@ WHERE id=$1 AND worker_id=$2
 RETURNING attempts, status;`, id, workerID, nextRun, nowTS)
 
 		if err := row.Scan(&attempts, &status); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if IsNoRows(err) {
 				return ErrLeaseMismatch
 			}
 			return err
 		}
 
-		if _, err := tx.Exec(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO queue_job_failures (job_id, error, attempts, failed_at)
 VALUES ($1, $2, $3, $4);`, id, errText, attempts, nowTS); err != nil {
 			return err
@@ -571,14 +572,18 @@ func (s *Store) AcquireResource(ctx context.Context, resourceKey string, jobID i
 		return nil
 	}
 	nowTS := s.now().UTC()
-	tag, err := s.DB.Exec(ctx, `
+	res, err := s.DB.ExecContext(ctx, `
 INSERT INTO queue_resource_locks (resource_key, job_id, worker_id, created_at)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (resource_key) DO NOTHING;`, resourceKey, jobID, workerID, nowTS)
 	if err != nil {
 		return fmt.Errorf("acquire resource: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if aff == 0 {
 		return ErrResourceBusy
 	}
 	return nil
@@ -590,14 +595,14 @@ func (s *Store) ReleaseResource(ctx context.Context, resourceKey string, jobID i
 	if resourceKey == "" {
 		return nil
 	}
-	_, err := s.DB.Exec(ctx, `
+	_, err := s.DB.ExecContext(ctx, `
 DELETE FROM queue_resource_locks
 WHERE resource_key = $1 AND job_id = $2;`, resourceKey, jobID)
 	return err
 }
 
-func (s *Store) withTx(ctx context.Context, fn func(pgx.Tx) error) (err error) {
-	tx, err := s.DB.Begin(ctx)
+func (s *Store) withTx(ctx context.Context, fn func(Tx) error) (err error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -605,10 +610,10 @@ func (s *Store) withTx(ctx context.Context, fn func(pgx.Tx) error) (err error) {
 	panicked := true
 	defer func() {
 		if panicked || err != nil {
-			_ = tx.Rollback(ctx)
+			_ = tx.Rollback()
 			return
 		}
-		err = tx.Commit(ctx)
+		err = tx.Commit()
 	}()
 
 	err = fn(tx)
@@ -616,7 +621,7 @@ func (s *Store) withTx(ctx context.Context, fn func(pgx.Tx) error) (err error) {
 	return err
 }
 
-func scanJob(row pgx.Row) (Job, error) {
+func scanJob(row scanner) (Job, error) {
 	var (
 		job         Job
 		leaseUntil  sql.NullTime

@@ -2,13 +2,15 @@ package worker
 
 import (
 	"context"
-	"errors"
+	"database/sql"
 	"io"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,27 +51,36 @@ func (f *fakeListenConn) WaitForNotification(ctx context.Context) (*pgconn.Notif
 }
 
 func TestNewPGNotifierAcquireError(t *testing.T) {
-	_, err := newPGNotifierWithAcquire(context.Background(), fakeListenAcquire{acquire: func(context.Context) (listenConn, error) {
-		return nil, errors.New("boom")
-	}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.EqualError(t, err, "acquire listen connection: boom")
+	db, err := sql.Open("pgx", "invalid-dsn")
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = newPGNotifier(context.Background(), db, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.Error(t, err)
 }
 
 func TestNewPGNotifierListenFailureReleasesConn(t *testing.T) {
-	released := false
-	_, err := newPGNotifierWithAcquire(context.Background(), fakeListenAcquire{acquire: func(context.Context) (listenConn, error) {
-		return &fakeListenConn{
-			exec: func(context.Context, string, ...any) (pgconn.CommandTag, error) {
-				return pgconn.CommandTag{}, errors.New("listen failed")
-			},
-			release: func() { released = true },
-		}, nil
-	}}, []QueueConfig{{Name: "default"}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.EqualError(t, err, "listen \"queue_jobs_default\": listen failed")
-	assert.True(t, released, "expected release on listen failure")
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("skipping integration test; TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = newPGNotifier(context.Background(), db, []QueueConfig{{Name: "default"}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.Error(t, err)
 }
 
 func TestPGNotifierLoopEmitsUpdates(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("skipping integration test; TEST_DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

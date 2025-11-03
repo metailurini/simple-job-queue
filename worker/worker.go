@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,8 +11,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/metailurini/simple-job-queue/apperrors"
 	"github.com/metailurini/simple-job-queue/storage"
@@ -73,7 +72,7 @@ type Config struct {
 // Runner orchestrates claiming, executing, heartbeat, and completion of jobs.
 type Runner struct {
 	store      jobStore
-	pool       *pgxpool.Pool
+	db         *sql.DB
 	handlers   HandlerMap
 	cfg        Config
 	logger     *slog.Logger
@@ -84,11 +83,11 @@ type Runner struct {
 }
 
 // NewRunner validates configuration and returns a worker runner.
-func NewRunner(store jobStore, pool *pgxpool.Pool, handlers HandlerMap, cfg Config) (*Runner, error) {
+func NewRunner(store jobStore, db *sql.DB, handlers HandlerMap, cfg Config) (*Runner, error) {
 	if store == nil {
 		return nil, apperrors.ErrNotConfigured
 	}
-	if pool == nil {
+	if db == nil {
 		return nil, apperrors.ErrNotConfigured
 	}
 	if len(handlers) == 0 {
@@ -149,7 +148,7 @@ func NewRunner(store jobStore, pool *pgxpool.Pool, handlers HandlerMap, cfg Conf
 
 	return &Runner{
 		store:      store,
-		pool:       pool,
+		db:         db,
 		handlers:   handlers,
 		cfg:        cfg,
 		logger:     logger,
@@ -162,7 +161,7 @@ func NewRunner(store jobStore, pool *pgxpool.Pool, handlers HandlerMap, cfg Conf
 // Run starts the worker loop until the context is canceled.
 func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.EnableNotifications && r.notifier == nil {
-		n, err := newPGNotifier(ctx, r.pool, r.cfg.Queues, r.logger)
+		n, err := newPGNotifier(ctx, r.db, r.cfg.Queues, r.logger)
 		if err != nil {
 			r.logger.Warn("listen/notify disabled", "err", err)
 		} else {
