@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 )
 
 // DB is intentionally small so *sql.DB already satisfies it.
@@ -26,3 +27,5 @@ type Tx interface {
 	Commit() error
 	Rollback() error
 }
+
+func IsNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
