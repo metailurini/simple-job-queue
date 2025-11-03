@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type listenAcquire interface {
@@ -38,13 +37,30 @@ type poolListenConn struct {
 	conn *sql.Conn
 }
 
+func extractPgxConn(driverConn any) (*pgx.Conn, error) {
+	// Prefer direct *pgx.Conn
+	if c, ok := driverConn.(*pgx.Conn); ok {
+		return c, nil
+	}
+	// Support types that expose Conn() *pgx.Conn (e.g. pgx stdlib wrapper)
+	if c, ok := driverConn.(interface{ Conn() *pgx.Conn }); ok {
+		return c.Conn(), nil
+	}
+	// Unexpected type
+	slog.Warn("unexpected driver connection type; ensure using pgx stdlib driver", "type", fmt.Sprintf("%T", driverConn))
+	return nil, fmt.Errorf("unexpected driver connection type %T", driverConn)
+}
+
 func (p *poolListenConn) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	var tag pgconn.CommandTag
 	err := p.conn.Raw(func(driverConn any) error {
-		pgxConn := driverConn.(*stdlib.Conn).Conn()
-		var err error
-		tag, err = pgxConn.Exec(ctx, sql, args...)
-		return err
+		pgxConn, err := extractPgxConn(driverConn)
+		if err != nil {
+			return err
+		}
+		var execErr error
+		tag, execErr = pgxConn.Exec(ctx, sql, args...)
+		return execErr
 	})
 	return tag, err
 }
@@ -56,10 +72,13 @@ func (p *poolListenConn) Release() {
 func (p *poolListenConn) WaitForNotification(ctx context.Context) (*pgconn.Notification, error) {
 	var notification *pgconn.Notification
 	err := p.conn.Raw(func(driverConn any) error {
-		pgxConn := driverConn.(*stdlib.Conn).Conn()
-		var err error
-		notification, err = pgxConn.WaitForNotification(ctx)
-		return err
+		pgxConn, err := extractPgxConn(driverConn)
+		if err != nil {
+			return err
+		}
+		var waitErr error
+		notification, waitErr = pgxConn.WaitForNotification(ctx)
+		return waitErr
 	})
 	return notification, err
 }

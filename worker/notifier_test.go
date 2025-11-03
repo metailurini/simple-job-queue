@@ -6,9 +6,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
@@ -130,5 +132,44 @@ func TestPGNotifierLoopEmitsUpdates(t *testing.T) {
 		assert.False(t, ok, "expected channel closed")
 	case <-time.After(time.Second):
 		require.FailNow(t, "timed out waiting for channel close")
+	}
+}
+
+// fakeStdlibLike simulates a driver connection type that exposes Conn() *pgx.Conn
+type fakeStdlibLike struct {
+	conn *pgx.Conn
+}
+
+func (f *fakeStdlibLike) Conn() *pgx.Conn { return f.conn }
+
+func TestExtractPgxConn_StdlibLike(t *testing.T) {
+	f := &fakeStdlibLike{conn: nil}
+	got, err := extractPgxConn(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil pgx.Conn for fakeStdlibLike with nil conn, got: %v", got)
+	}
+}
+
+func TestExtractPgxConn_PgxConnType(t *testing.T) {
+	var p *pgx.Conn
+	got, err := extractPgxConn(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil pgx.Conn for nil *pgx.Conn input, got: %v", got)
+	}
+}
+
+func TestExtractPgxConn_UnknownType(t *testing.T) {
+	_, err := extractPgxConn(12345)
+	if err == nil {
+		t.Fatalf("expected error for unknown driver connection type")
+	}
+	if !strings.Contains(err.Error(), "unexpected driver connection type") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
