@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -248,29 +250,85 @@ func TestTickContinuesAfterScanError(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// func TestScanScheduleCopiesPayloadAndSetsPointers(t *testing.T) {
-// 	payload := []byte{1, 2, 3}
-// 	dedupe := sql.NullString{Valid: true, String: "dk"}
-// 	last := sql.NullTime{Valid: true, Time: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)}
+type stubRow struct {
+	values []any
+	err    error
+}
 
-// 	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at"}).
-// 		AddRow(int64(5), "send", "queue", payload, "*/5 * * * *", dedupe, last)
-// 	rows.Next()
-// 	schedule, err := storage.ScanSchedule(rows)
-// 	require.NoError(t, err)
+func (r stubRow) scanInto(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) != len(r.values) {
+		return fmt.Errorf("scan length mismatch: dest=%d values=%d", len(dest), len(r.values))
+	}
+	for i, d := range dest {
+		switch ptr := d.(type) {
+		case *int64:
+			*ptr = r.values[i].(int64)
+		case *int:
+			*ptr = r.values[i].(int)
+		case *string:
+			*ptr = r.values[i].(string)
+		case *[]byte:
+			if r.values[i] == nil {
+				*ptr = nil
+			} else {
+				val := r.values[i].([]byte)
+				*ptr = append((*ptr)[:0], val...)
+			}
+		case *sql.NullString:
+			*ptr = r.values[i].(sql.NullString)
+		case *sql.NullTime:
+			*ptr = r.values[i].(sql.NullTime)
+		default:
+			rv := reflect.ValueOf(ptr)
+			if rv.Kind() != reflect.Pointer || rv.IsNil() {
+				return fmt.Errorf("unsupported scan dest %T", d)
+			}
+			rv.Elem().Set(reflect.ValueOf(r.values[i]))
+		}
+	}
+	return nil
+}
 
-// 	assert.Equal(t, int64(5), schedule.ID)
-// 	assert.Equal(t, "send", schedule.TaskType)
-// 	assert.Equal(t, "queue", schedule.Queue)
+type stubSingleRow struct {
+	row stubRow
+}
 
-// 	payload[0] = 9
-// 	expectedPayload := []byte{1, 2, 3}
-// 	assert.Equal(t, expectedPayload, schedule.Payload, "expected payload copy")
-// 	require.NotNil(t, schedule.DedupeKey, "expected dedupe key to be set")
-// 	assert.Equal(t, "dk", *schedule.DedupeKey)
-// 	require.NotNil(t, schedule.LastEnqueuedAt, "expected last enqueued at to be set")
-// 	assert.True(t, schedule.LastEnqueuedAt.Equal(last.Time))
-// }
+func (r *stubSingleRow) Scan(dest ...any) error {
+	return r.row.scanInto(dest...)
+}
+
+func TestScanScheduleCopiesPayloadAndSetsPointers(t *testing.T) {
+	payload := []byte{1, 2, 3}
+	dedupe := sql.NullString{Valid: true, String: "dk"}
+	last := sql.NullTime{Valid: true, Time: time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)}
+	row := &stubSingleRow{row: stubRow{values: []any{
+		int64(5),
+		"send",
+		"queue",
+		payload,
+		"*/5 * * * *",
+		dedupe,
+		last,
+	}}}
+
+	schedule, err := storage.ScanSchedule(row)
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(5), schedule.ID)
+	assert.Equal(t, "send", schedule.TaskType)
+	assert.Equal(t, "queue", schedule.Queue)
+
+	payload[0] = 9
+	expectedPayload := []byte{1, 2, 3}
+	assert.Equal(t, expectedPayload, schedule.Payload, "expected payload copy")
+	require.NotNil(t, schedule.DedupeKey, "expected dedupe key to be set")
+	assert.Equal(t, "dk", *schedule.DedupeKey)
+	require.NotNil(t, schedule.LastEnqueuedAt, "expected last enqueued at to be set")
+	assert.True(t, schedule.LastEnqueuedAt.Equal(last.Time))
+}
 
 func TestEnqueueRunsBuildsParamsAndSkipsDuplicates(t *testing.T) {
 	db, mock, err := sqlmock.New()

@@ -171,13 +171,6 @@ SELECT` + jobColumns + `
 FROM updated
 ORDER BY priority DESC, run_at ASC, id ASC;`
 
-const enqueueSQL = `
-INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-ON CONFLICT DO NOTHING
-RETURNING id;
-`
-
 const selectJobSQL = "SELECT " + jobColumns + `
 FROM queue_jobs
 WHERE id = $1;
