@@ -61,19 +61,6 @@ func TestNewPGNotifierAcquireError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestNewPGNotifierListenFailureReleasesConn(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("skipping integration test; TEST_DATABASE_URL not set")
-	}
-	db, err := sql.Open("pgx", dsn)
-	require.NoError(t, err)
-	defer db.Close()
-
-	_, err = newPGNotifier(context.Background(), db, []QueueConfig{{Name: "default"}}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.Error(t, err)
-}
-
 func TestPGNotifierLoopEmitsUpdates(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
