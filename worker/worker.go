@@ -32,6 +32,11 @@ type jobStore interface {
 	CompleteJob(ctx context.Context, id int64, workerID string) error
 	AcquireResource(ctx context.Context, resourceKey string, jobID int64, workerID string) error
 	ReleaseResource(ctx context.Context, resourceKey string, jobID int64) error
+	// RescheduleJob updates a job's run_at time without incrementing its
+	// attempts count. This is used to postpone a job when a transient
+	// condition like resource contention occurs, which should not count
+	// as a failure attempt.
+	RescheduleJob(ctx context.Context, id int64, runAt time.Time) error
 }
 
 func init() {
@@ -252,9 +257,11 @@ func (r *Runner) executeJob(ctx context.Context, job storage.Job) {
 		defer acqCancel()
 		if err := r.store.AcquireResource(storeCtx, *job.ResourceKey, job.ID, r.cfg.WorkerID); err != nil {
 			if errors.Is(err, storage.ErrResourceBusy) {
-				r.logger.Info("resource busy, requeueing", "job_id", job.ID, "resource_key", *job.ResourceKey)
-				// Short backoff before trying again
-				r.requeue(ctx, job, r.cfg.ResourceBusyRequeueDelay)
+				r.logger.Info("resource busy, rescheduling", "job_id", job.ID, "resource_key", *job.ResourceKey)
+				nextRun := r.now().Add(r.cfg.ResourceBusyRequeueDelay)
+				if err := r.store.RescheduleJob(storeCtx, job.ID, nextRun); err != nil {
+					r.logger.Error("reschedule failed", "job_id", job.ID, "err", err)
+				}
 				return
 			}
 			// Execution error (e.g., DB down); log and fail

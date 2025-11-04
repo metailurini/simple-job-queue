@@ -506,6 +506,29 @@ WHERE id=$1 AND worker_id=$2;`, id, workerID, runAt, nowTS)
 	return nil
 }
 
+// RescheduleJob places the job back into the queued state without incrementing
+// the attempts counter. This is used for transient, non-failure conditions
+// like resource contention.
+func (s *Store) RescheduleJob(ctx context.Context, id int64, runAt time.Time) error {
+	nowTS := s.now().UTC()
+	if runAt.IsZero() {
+		runAt = nowTS
+	}
+	runAt = runAt.UTC()
+	_, err := s.DB.ExecContext(ctx, `
+UPDATE queue_jobs
+SET status      = 'queued',
+    run_at      = $2,
+    worker_id   = NULL,
+    lease_until = NULL,
+    updated_at  = $3
+WHERE id = $1;`, id, runAt, nowTS)
+	if err != nil {
+		return fmt.Errorf("reschedule job: %w", err)
+	}
+	return nil
+}
+
 // FailJob records a job failure, optionally scheduling a retry or marking the job dead.
 // The method inserts a row into job_failures for inspection and enforces max_attempts.
 // When the job exhausts its attempts the return value "dead" is true.
