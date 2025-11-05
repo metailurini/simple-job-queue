@@ -250,7 +250,6 @@ func (r *Runner) executeJob(ctx context.Context, job storage.Job) {
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// --- NEW: Try to acquire resource ownership ---
 	acquired := false
 	if job.ResourceKey != nil && *job.ResourceKey != "" {
 		storeCtx, acqCancel := context.WithTimeout(ctx, r.cfg.StoreOperationTimeout)
@@ -284,7 +283,6 @@ func (r *Runner) executeJob(ctx context.Context, job storage.Job) {
 			}
 		}()
 	}
-	// --- END NEW ---
 
 	var wg sync.WaitGroup
 	stopHeartbeat := make(chan struct{})
@@ -342,16 +340,6 @@ func (r *Runner) heartbeat(ctx context.Context, wg *sync.WaitGroup, stop <-chan 
 				}
 			}()
 		}
-	}
-}
-
-func (r *Runner) requeue(ctx context.Context, job storage.Job, delay time.Duration) {
-	storeCtx, cancel := context.WithTimeout(ctx, r.cfg.StoreOperationTimeout)
-	defer cancel()
-	next := r.now().Add(delay)
-	if err := r.store.RequeueJob(storeCtx, job.ID, r.cfg.WorkerID, next); err != nil {
-		r.logger.Error("requeue failed", "job_id", job.ID, "err", err)
-		return
 	}
 }
 
