@@ -202,6 +202,8 @@ func TestExecuteJob_AcquireResource_Busy(t *testing.T) {
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.releaseResourceCalls), "should not release resource we didn't acquire")
 	// Verify job was rescheduled
 	assert.Equal(t, int32(1), atomic.LoadInt32(&mockStore.rescheduleCalls), "job should be rescheduled")
+	// Verify attempts was NOT incremented on transient resource contention
+	assert.Equal(t, 0, job.Attempts, "job attempts should not be incremented on resource contention")
 	// Verify job was not completed or failed
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.requeueCalls), "job should not be requeued")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.completeCalls), "job should not be completed")

@@ -217,5 +217,7 @@ func TestRunner_executeJob_ResourceBusy(t *testing.T) {
 	executeJobSync(t, runner, context.Background(), job)
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&store.rescheduleCalls), "expected RescheduleJob to be called")
+	// Verify attempts was NOT incremented on resource contention
+	assert.Equal(t, 0, job.Attempts, "expected job attempts not to be incremented")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&store.requeueCalls), "expected RequeueJob not to be called")
 }
