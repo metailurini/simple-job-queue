@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/metailurini/simple-job-queue/compare/v1.1.0...v1.2.0) (2025-11-05)
+
+
+### Features
+
+* Reschedule jobs on resource contention ([#6](https://github.com/metailurini/simple-job-queue/issues/6)) ([61ac3f6](https://github.com/metailurini/simple-job-queue/commit/61ac3f6b772cbce3587ba16f70306f543ddcd45b))
+
 ## [1.1.0](https://github.com/metailurini/simple-job-queue/compare/v1.0.0...v1.1.0) (2025-11-03)
 
 
