@@ -156,7 +156,6 @@ updated AS (
 	SET
 		status      = 'running',
 		worker_id   = $2,
-		attempts    = j.attempts + 1,
 		lease_until = $4,
 		updated_at  = $5
 	FROM candidates c
@@ -550,8 +549,9 @@ func (s *Store) FailJob(ctx context.Context, id int64, workerID string, nextRun 
 	execErr := s.withTx(ctx, func(tx Tx) error {
 		row := tx.QueryRowContext(ctx, `
 UPDATE queue_jobs
-SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,
-    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,
+SET attempts = attempts + 1,
+    status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'queued' END,
+    run_at = CASE WHEN attempts + 1 >= max_attempts THEN run_at ELSE $3 END,
     worker_id=NULL,
     lease_until=NULL,
     updated_at=$4

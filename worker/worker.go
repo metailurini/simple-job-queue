@@ -260,10 +260,13 @@ func (r *Runner) executeJob(ctx context.Context, job storage.Job) {
 				r.logger.Info("resource busy, rescheduling", "job_id", job.ID, "resource_key", *job.ResourceKey)
 				nextRun := r.now().Add(r.cfg.ResourceBusyRequeueDelay)
 				if err := r.store.RescheduleJob(storeCtx, job.ID, nextRun); err != nil {
-					r.logger.Error("reschedule failed", "job_id", job.ID, "err", err)
+					r.logger.Error("reschedule failed, failing job", "job_id", job.ID, "err", err)
+					r.fail(jobCtx, job, fmt.Errorf("reschedule failed: %w", err))
+					return
 				}
 				return
 			}
+
 			// Execution error (e.g., DB down); log and fail
 			r.logger.Error("acquire resource failed", "job_id", job.ID, "err", err)
 			r.fail(jobCtx, job, fmt.Errorf("acquire resource: %w", err))

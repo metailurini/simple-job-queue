@@ -217,7 +217,7 @@ func TestFailJob_RecordsFailureAndCommits(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return base })
 	require.NoError(t, err)
 
-	updateSQL := regexp.QuoteMeta("UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;")
+	updateSQL := regexp.QuoteMeta("UPDATE queue_jobs\nSET attempts = attempts + 1,\n    status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts + 1 >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;")
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(updateSQL).
@@ -250,7 +250,7 @@ func TestFailJob_ReturnsErrLeaseMismatch(t *testing.T) {
 	store, err := NewStore(db, func() time.Time { return base })
 	require.NoError(t, err)
 
-	updateSQL := regexp.QuoteMeta("UPDATE queue_jobs\nSET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;")
+	updateSQL := regexp.QuoteMeta("UPDATE queue_jobs\nSET attempts = attempts + 1,\n    status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'queued' END,\n    run_at = CASE WHEN attempts + 1 >= max_attempts THEN run_at ELSE $3 END,\n    worker_id=NULL,\n    lease_until=NULL,\n    updated_at=$4\nWHERE id=$1 AND worker_id=$2\nRETURNING attempts, status;")
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(updateSQL).
