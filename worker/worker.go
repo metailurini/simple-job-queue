@@ -32,6 +32,11 @@ type jobStore interface {
 	CompleteJob(ctx context.Context, id int64, workerID string) error
 	AcquireResource(ctx context.Context, resourceKey string, jobID int64, workerID string) error
 	ReleaseResource(ctx context.Context, resourceKey string, jobID int64) error
+	// RescheduleJob updates a job's run_at time without incrementing its
+	// attempts count. This is used to postpone a job when a transient
+	// condition like resource contention occurs, which should not count
+	// as a failure attempt.
+	RescheduleJob(ctx context.Context, id int64, runAt time.Time) error
 }
 
 func init() {
@@ -245,18 +250,22 @@ func (r *Runner) executeJob(ctx context.Context, job storage.Job) {
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// --- NEW: Try to acquire resource ownership ---
 	acquired := false
 	if job.ResourceKey != nil && *job.ResourceKey != "" {
 		storeCtx, acqCancel := context.WithTimeout(ctx, r.cfg.StoreOperationTimeout)
 		defer acqCancel()
 		if err := r.store.AcquireResource(storeCtx, *job.ResourceKey, job.ID, r.cfg.WorkerID); err != nil {
 			if errors.Is(err, storage.ErrResourceBusy) {
-				r.logger.Info("resource busy, requeueing", "job_id", job.ID, "resource_key", *job.ResourceKey)
-				// Short backoff before trying again
-				r.requeue(ctx, job, r.cfg.ResourceBusyRequeueDelay)
+				r.logger.Info("resource busy, rescheduling", "job_id", job.ID, "resource_key", *job.ResourceKey)
+				nextRun := r.now().Add(r.cfg.ResourceBusyRequeueDelay)
+				if err := r.store.RescheduleJob(storeCtx, job.ID, nextRun); err != nil {
+					r.logger.Error("reschedule failed, failing job", "job_id", job.ID, "err", err)
+					r.fail(jobCtx, job, fmt.Errorf("reschedule failed: %w", err))
+					return
+				}
 				return
 			}
+
 			// Execution error (e.g., DB down); log and fail
 			r.logger.Error("acquire resource failed", "job_id", job.ID, "err", err)
 			r.fail(jobCtx, job, fmt.Errorf("acquire resource: %w", err))
@@ -274,7 +283,6 @@ func (r *Runner) executeJob(ctx context.Context, job storage.Job) {
 			}
 		}()
 	}
-	// --- END NEW ---
 
 	var wg sync.WaitGroup
 	stopHeartbeat := make(chan struct{})
@@ -332,16 +340,6 @@ func (r *Runner) heartbeat(ctx context.Context, wg *sync.WaitGroup, stop <-chan 
 				}
 			}()
 		}
-	}
-}
-
-func (r *Runner) requeue(ctx context.Context, job storage.Job, delay time.Duration) {
-	storeCtx, cancel := context.WithTimeout(ctx, r.cfg.StoreOperationTimeout)
-	defer cancel()
-	next := r.now().Add(delay)
-	if err := r.store.RequeueJob(storeCtx, job.ID, r.cfg.WorkerID, next); err != nil {
-		r.logger.Error("requeue failed", "job_id", job.ID, "err", err)
-		return
 	}
 }
 

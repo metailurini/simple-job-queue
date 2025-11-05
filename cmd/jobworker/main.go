@@ -109,7 +109,7 @@ func main() {
 	handlers := worker.HandlerMap{
 		"noop": func(ctx context.Context, job storage.Job) error {
 			logger.Info("executing job", "id", job.ID, "task", job.TaskType, "queue", job.Queue)
-			time.Sleep(30 * time.Second)
+			time.Sleep(10 * time.Second)
 			return nil
 		},
 	}

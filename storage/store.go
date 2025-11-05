@@ -156,7 +156,6 @@ updated AS (
 	SET
 		status      = 'running',
 		worker_id   = $2,
-		attempts    = j.attempts + 1,
 		lease_until = $4,
 		updated_at  = $5
 	FROM candidates c
@@ -506,6 +505,29 @@ WHERE id=$1 AND worker_id=$2;`, id, workerID, runAt, nowTS)
 	return nil
 }
 
+// RescheduleJob places the job back into the queued state without incrementing
+// the attempts counter. This is used for transient, non-failure conditions
+// like resource contention.
+func (s *Store) RescheduleJob(ctx context.Context, id int64, runAt time.Time) error {
+	nowTS := s.now().UTC()
+	if runAt.IsZero() {
+		runAt = nowTS
+	}
+	runAt = runAt.UTC()
+	_, err := s.DB.ExecContext(ctx, `
+UPDATE queue_jobs
+SET status      = 'queued',
+    run_at      = $2,
+    worker_id   = NULL,
+    lease_until = NULL,
+    updated_at  = $3
+WHERE id = $1;`, id, runAt, nowTS)
+	if err != nil {
+		return fmt.Errorf("reschedule job: %w", err)
+	}
+	return nil
+}
+
 // FailJob records a job failure, optionally scheduling a retry or marking the job dead.
 // The method inserts a row into job_failures for inspection and enforces max_attempts.
 // When the job exhausts its attempts the return value "dead" is true.
@@ -527,8 +549,9 @@ func (s *Store) FailJob(ctx context.Context, id int64, workerID string, nextRun 
 	execErr := s.withTx(ctx, func(tx Tx) error {
 		row := tx.QueryRowContext(ctx, `
 UPDATE queue_jobs
-SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,
-    run_at = CASE WHEN attempts >= max_attempts THEN run_at ELSE $3 END,
+SET attempts = attempts + 1,
+    status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'queued' END,
+    run_at = CASE WHEN attempts + 1 >= max_attempts THEN run_at ELSE $3 END,
     worker_id=NULL,
     lease_until=NULL,
     updated_at=$4

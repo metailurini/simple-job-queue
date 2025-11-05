@@ -25,11 +25,13 @@ type mockJobStore struct {
 	requeueErr           error
 	failErr              error
 	completeErr          error
+	rescheduleErr        error
 	acquireResourceCalls int32
 	releaseResourceCalls int32
 	requeueCalls         int32
 	failCalls            int32
 	completeCalls        int32
+	rescheduleCalls      int32
 	mu                   sync.Mutex
 	requeuedJobs         []int64
 	failedJobs           []int64
@@ -76,6 +78,11 @@ func (m *mockJobStore) AcquireResource(ctx context.Context, resourceKey string, 
 func (m *mockJobStore) ReleaseResource(ctx context.Context, resourceKey string, jobID int64) error {
 	atomic.AddInt32(&m.releaseResourceCalls, 1)
 	return m.releaseResourceErr
+}
+
+func (m *mockJobStore) RescheduleJob(ctx context.Context, id int64, runAt time.Time) error {
+	atomic.AddInt32(&m.rescheduleCalls, 1)
+	return m.rescheduleErr
 }
 
 func setupTestRunner(t *testing.T, mockStore *mockJobStore, handlers HandlerMap) *Runner {
@@ -193,9 +200,12 @@ func TestExecuteJob_AcquireResource_Busy(t *testing.T) {
 	assert.False(t, handlerCalled, "handler should not be called when resource is busy")
 	// Verify resource was NOT released (we never acquired it)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.releaseResourceCalls), "should not release resource we didn't acquire")
-	// Verify job was requeued
-	assert.Equal(t, int32(1), atomic.LoadInt32(&mockStore.requeueCalls), "job should be requeued")
+	// Verify job was rescheduled
+	assert.Equal(t, int32(1), atomic.LoadInt32(&mockStore.rescheduleCalls), "job should be rescheduled")
+	// Verify attempts was NOT incremented on transient resource contention
+	assert.Equal(t, 0, job.Attempts, "job attempts should not be incremented on resource contention")
 	// Verify job was not completed or failed
+	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.requeueCalls), "job should not be requeued")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.completeCalls), "job should not be completed")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mockStore.failCalls), "job should not fail")
 }
