@@ -90,7 +90,7 @@ func resetTestTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, "TRUNCATE queue_job_failures, queue_jobs RESTART IDENTITY"); err != nil {
+	if _, err := db.ExecContext(ctx, "TRUNCATE queue_job_failures, queue_jobs, queue_workers RESTART IDENTITY"); err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
 }
