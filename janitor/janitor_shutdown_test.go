@@ -35,6 +35,7 @@ func TestJanitor_Shutdown_Unit(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DELETE FROM queue_workers").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -199,6 +200,7 @@ func TestJanitor_Shutdown_DBErrorOnCleanup(t *testing.T) {
 	require.NoError(t, err)
 
 	mock.ExpectExec("DELETE FROM queue_resource_locks").WillReturnError(assert.AnError)
+	mock.ExpectExec("DELETE FROM queue_workers").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -27,10 +27,10 @@ func TestClaimJobs_UsesProvidedNowAndLeaseOrder(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"id", "queue", "task_type", "payload", "priority", "run_at", "status", "attempts", "max_attempts", "backoff_sec",
-		"lease_until", "worker_id", "dedupe_key", "resource_key", "created_at", "updated_at",
+		"lease_until", "worker_id", "dedupe_key", "resource_key", "origin_job_id", "target_worker_id", "created_at", "updated_at",
 	}).AddRow(
 		int64(10), "emails", "send", []byte(`{}`), 0, nowUTC, "running", 1, 20, 10,
-		leaseUTC, "worker-1", nil, nil, nowUTC, nowUTC,
+		leaseUTC, "worker-1", nil, nil, nil, nil, nowUTC, nowUTC,
 	)
 
 	mock.ExpectQuery(regexp.QuoteMeta(claimSQL)).
@@ -73,10 +73,10 @@ func TestClaimJobs_DefaultsNowAndTruncatesLease(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"id", "queue", "task_type", "payload", "priority", "run_at", "status", "attempts", "max_attempts", "backoff_sec",
-		"lease_until", "worker_id", "dedupe_key", "resource_key", "created_at", "updated_at",
+		"lease_until", "worker_id", "dedupe_key", "resource_key", "origin_job_id", "target_worker_id", "created_at", "updated_at",
 	}).AddRow(
 		int64(42), "default", "process", []byte(`{"foo":1}`), 1, nowUTC, "running", 2, 25, 15,
-		leaseUntil, "wk", nil, nil, nowUTC, nowUTC,
+		leaseUntil, "wk", nil, nil, nil, nil, nowUTC, nowUTC,
 	)
 
 	mock.ExpectQuery(regexp.QuoteMeta(claimSQL)).

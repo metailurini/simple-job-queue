@@ -259,24 +259,41 @@ func (s *Store) EnqueueJobs(ctx context.Context, params []EnqueueParams) ([]int6
 		return nil, fmt.Errorf("no params provided: %w", apperrors.ErrInvalidArgument)
 	}
 
+	// Separate broadcast from non-broadcast jobs
+	var nonBroadcast []EnqueueParams
 	var allIDs []int64
+
 	for i := range params {
 		if params[i].Broadcast {
+			// Process any accumulated non-broadcast jobs first
+			if len(nonBroadcast) > 0 {
+				ids, err := s.enqueueRegular(ctx, nonBroadcast)
+				if err != nil {
+					return nil, err
+				}
+				allIDs = append(allIDs, ids...)
+				nonBroadcast = nil
+			}
+			// Process broadcast job
 			originID, err := s.enqueueBroadcast(ctx, params[i])
 			if err != nil {
 				return nil, err
 			}
 			allIDs = append(allIDs, originID)
 		} else {
-			// Process non-broadcast jobs
-			nonBroadcast := []EnqueueParams{params[i]}
-			ids, err := s.enqueueRegular(ctx, nonBroadcast)
-			if err != nil {
-				return nil, err
-			}
-			allIDs = append(allIDs, ids...)
+			nonBroadcast = append(nonBroadcast, params[i])
 		}
 	}
+
+	// Process any remaining non-broadcast jobs
+	if len(nonBroadcast) > 0 {
+		ids, err := s.enqueueRegular(ctx, nonBroadcast)
+		if err != nil {
+			return nil, err
+		}
+		allIDs = append(allIDs, ids...)
+	}
+
 	return allIDs, nil
 }
 
