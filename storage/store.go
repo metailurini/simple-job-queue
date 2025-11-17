@@ -26,8 +26,9 @@ var ErrResourceBusy = errors.New("storage: resource busy")
 
 // Store wraps a pgx connection helper and exposes job-centric helpers.
 type Store struct {
-	DB  DB
-	now func() time.Time
+	DB                      DB
+	now                     func() time.Time
+	workerActiveGracePeriod time.Duration
 }
 
 // NewStore builds a Store.
@@ -38,7 +39,11 @@ func NewStore(db DB, nowFn func() time.Time) (*Store, error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &Store{DB: db, now: nowFn}, nil
+	return &Store{
+		DB:                      db,
+		now:                     nowFn,
+		workerActiveGracePeriod: 5 * time.Minute,
+	}, nil
 }
 
 // NewStoreWithProvider builds a Store using the supplied time provider.
@@ -424,23 +429,34 @@ RETURNING id;`,
 			return err
 		}
 
-		// Step 2: Get active workers (5 minute grace period)
+		// Step 2: Get active workers
 		// ActiveWorkers reads from the workers table; it's fine to call outside
 		// the transaction snapshot since worker liveness is independent of this tx.
-		cutoff := s.now().UTC().Add(-5 * time.Minute)
+		cutoff := s.now().UTC().Add(-s.workerActiveGracePeriod)
 		workers, err := s.ActiveWorkers(ctx, cutoff)
 		if err != nil {
 			return fmt.Errorf("get active workers: %w", err)
 		}
 
 		// Step 3: Insert per-worker child jobs (inside tx)
-		for _, workerID := range workers {
-			if _, err := tx.ExecContext(ctx, `
-INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
-				p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, originID, workerID,
-			); err != nil {
-				return fmt.Errorf("insert child job for worker %s: %w", workerID, err)
+		if len(workers) > 0 {
+			args := make([]any, 0, len(workers)*9)
+			var b strings.Builder
+			b.WriteString("INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id) VALUES ")
+
+			for i, workerID := range workers {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+					i*9+1, i*9+2, i*9+3, i*9+4, i*9+5, i*9+6, i*9+7, i*9+8, i*9+9))
+
+				args = append(args, p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, originID, workerID)
+			}
+			b.WriteString(";")
+
+			if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+				return fmt.Errorf("bulk insert child jobs: %w", err)
 			}
 		}
 

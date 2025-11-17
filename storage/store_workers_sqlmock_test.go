@@ -194,6 +194,9 @@ func TestEnqueueBroadcast_CreatesOriginAndChildJobs(t *testing.T) {
 
 	cutoff := providerNow.UTC().Add(-5 * time.Minute)
 
+	// Expect transaction begin
+	mock.ExpectBegin()
+
 	// Expect origin job insert
 	mock.ExpectQuery(regexp.QuoteMeta(`
 INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key)
@@ -214,18 +217,11 @@ ORDER BY worker_id;`)).
 		WithArgs(cutoff).
 		WillReturnRows(workerRows)
 
-	// Expect child job inserts for each worker
+	// Expect bulk child job insert
 	mock.ExpectExec(regexp.QuoteMeta(`
-INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`)).
-		WithArgs("default", "broadcast-task", []byte(`{"msg":"hello"}`), 5, providerNow, 20, 10, int64(100), "worker-A").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	mock.ExpectExec(regexp.QuoteMeta(`
-INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`)).
-		WithArgs("default", "broadcast-task", []byte(`{"msg":"hello"}`), 5, providerNow, 20, 10, int64(100), "worker-B").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9),($10, $11, $12, $13, $14, $15, $16, $17, $18);`)).
+		WithArgs("default", "broadcast-task", []byte(`{"msg":"hello"}`), 5, providerNow, 20, 10, int64(100), "worker-A", "default", "broadcast-task", []byte(`{"msg":"hello"}`), 5, providerNow, 20, 10, int64(100), "worker-B").
+		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	// Expect origin job to be marked as dispatched
 	mock.ExpectExec(regexp.QuoteMeta(`
@@ -234,6 +230,9 @@ SET status = 'dispatched', updated_at = $2
 WHERE id = $1;`)).
 		WithArgs(int64(100), providerNow).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Expect transaction commit
+	mock.ExpectCommit()
 
 	ctx := context.Background()
 	ids, err := store.EnqueueJobs(ctx, []EnqueueParams{
@@ -264,6 +263,9 @@ func TestEnqueueBroadcast_NoActiveWorkers(t *testing.T) {
 
 	cutoff := providerNow.UTC().Add(-5 * time.Minute)
 
+	// Expect transaction begin
+	mock.ExpectBegin()
+
 	// Expect origin job insert
 	mock.ExpectQuery(regexp.QuoteMeta(`
 INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key)
@@ -289,6 +291,9 @@ SET status = 'dispatched', updated_at = $2
 WHERE id = $1;`)).
 		WithArgs(int64(200), providerNow).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// Expect transaction commit
+	mock.ExpectCommit()
 
 	ctx := context.Background()
 	ids, err := store.EnqueueJobs(ctx, []EnqueueParams{
