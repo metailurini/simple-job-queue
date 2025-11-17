@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Interval     time.Duration // how often to run cleanup
 	MaxAge       time.Duration // delete locks older than this
+	WorkerMaxAge time.Duration // delete workers older than this
 	GracePeriod  time.Duration // how long to wait for cleanup on shutdown
 	Logger       *slog.Logger
 	TimeProvider timeprovider.Provider
@@ -37,6 +38,9 @@ func NewRunner(db storage.DB, cfg Config) (*Runner, error) {
 	}
 	if cfg.MaxAge <= 0 {
 		cfg.MaxAge = 5 * time.Minute
+	}
+	if cfg.WorkerMaxAge <= 0 {
+		cfg.WorkerMaxAge = 5 * time.Minute
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -102,23 +106,47 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) cleanup(ctx context.Context) bool {
-	cutoff := r.now().UTC().Add(-r.cfg.MaxAge)
-	// Use <= to include locks created exactly at the cutoff boundary.
-	res, err := r.db.ExecContext(ctx, `
-DELETE FROM queue_resource_locks
-WHERE created_at <= $1;`, cutoff)
+func (r *Runner) executeCleanupQuery(ctx context.Context, description, query string, args ...any) (bool, int64) {
+	res, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
-		r.logger.Error("janitor cleanup failed", "err", err)
-		return false
+		r.logger.Error("janitor cleanup failed", "description", description, "err", err)
+		return false, 0
 	}
+
 	affected, err := res.RowsAffected()
 	if err != nil {
-		r.logger.Error("janitor cleanup failed", "err", err)
-		return false
+		r.logger.Error("janitor cleanup failed to get rows affected", "description", description, "err", err)
+		return false, 0
 	}
-	if affected > 0 {
+
+	return true, affected
+}
+
+func (r *Runner) cleanup(ctx context.Context) bool {
+	cutoff := r.now().UTC().Add(-r.cfg.MaxAge)
+	success := true
+
+	// Clean up stale resource locks
+	// Use <= to include locks created exactly at the cutoff boundary.
+	ok, affected := r.executeCleanupQuery(ctx, "stale resource locks", `
+DELETE FROM queue_resource_locks
+WHERE created_at <= $1;`, cutoff)
+	if !ok {
+		success = false
+	} else if affected > 0 {
 		r.logger.Info("janitor cleaned stale locks", "count", affected)
 	}
-	return true
+
+	// Clean up dead workers
+	workerCutoff := r.now().UTC().Add(-r.cfg.WorkerMaxAge)
+	ok, affected = r.executeCleanupQuery(ctx, "dead workers", `
+DELETE FROM queue_workers
+WHERE last_seen < $1;`, workerCutoff)
+	if !ok {
+		success = false
+	} else if affected > 0 {
+		r.logger.Info("janitor cleaned dead workers", "count", affected)
+	}
+
+	return success
 }

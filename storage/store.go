@@ -26,8 +26,9 @@ var ErrResourceBusy = errors.New("storage: resource busy")
 
 // Store wraps a pgx connection helper and exposes job-centric helpers.
 type Store struct {
-	DB  DB
-	now func() time.Time
+	DB                      DB
+	now                     func() time.Time
+	workerActiveGracePeriod time.Duration
 }
 
 // NewStore builds a Store.
@@ -38,7 +39,11 @@ func NewStore(db DB, nowFn func() time.Time) (*Store, error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &Store{DB: db, now: nowFn}, nil
+	return &Store{
+		DB:                      db,
+		now:                     nowFn,
+		workerActiveGracePeriod: 5 * time.Minute,
+	}, nil
 }
 
 // NewStoreWithProvider builds a Store using the supplied time provider.
@@ -70,6 +75,8 @@ type Job struct {
 	WorkerID       *string
 	DedupeKey      *string
 	ResourceKey    *string
+	OriginJobID    *int64
+	TargetWorkerID *string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -102,6 +109,7 @@ type EnqueueParams struct {
 	BackoffSeconds int
 	DedupeKey      *string
 	ResourceKey    *string
+	Broadcast      bool
 }
 
 const jobColumns = `
@@ -119,6 +127,8 @@ const jobColumns = `
   worker_id,
   dedupe_key,
   resource_key,
+  origin_job_id,
+  target_worker_id,
   created_at,
   updated_at
 `
@@ -145,8 +155,8 @@ WITH candidates AS (
 	FROM queue_jobs
 	WHERE queue = $1
 		AND (
-			(status = 'queued' AND run_at <= $5)
-			OR ($6 AND status = 'running' AND lease_until < $5)
+			(target_worker_id IS NULL AND ((status = 'queued' AND run_at <= $5) OR ($6 AND status = 'running' AND lease_until < $5)))
+			OR (target_worker_id = $2 AND status = 'queued' AND run_at <= $5)
 		)
 	ORDER BY priority DESC, run_at ASC, id ASC
 	LIMIT $3
@@ -160,10 +170,6 @@ updated AS (
 		updated_at  = $5
 	FROM candidates c
 	WHERE j.id = c.id
-		AND (
-			(j.status = 'queued' AND j.run_at <= $5)
-			OR ($6 AND j.status = 'running' AND j.lease_until < $5)
-		)
 	RETURNING j.*
 )
 SELECT` + jobColumns + `
@@ -248,10 +254,52 @@ func (s *Store) EnqueueJob(ctx context.Context, params EnqueueParams) (int64, er
 // honoring the active dedupe constraint. It returns the inserted ids in
 // the order returned by PostgreSQL (which includes only successfully
 // inserted rows). If none were inserted the returned slice will be empty.
+// When a job has Broadcast=true, it creates an origin job and per-worker child jobs.
 func (s *Store) EnqueueJobs(ctx context.Context, params []EnqueueParams) ([]int64, error) {
 	if len(params) == 0 {
 		return nil, fmt.Errorf("no params provided: %w", apperrors.ErrInvalidArgument)
 	}
+
+	// Separate broadcast from non-broadcast jobs
+	var nonBroadcast []EnqueueParams
+	var allIDs []int64
+
+	for i := range params {
+		if params[i].Broadcast {
+			// Process any accumulated non-broadcast jobs first
+			if len(nonBroadcast) > 0 {
+				ids, err := s.enqueueRegular(ctx, nonBroadcast)
+				if err != nil {
+					return nil, err
+				}
+				allIDs = append(allIDs, ids...)
+				nonBroadcast = nil
+			}
+			// Process broadcast job
+			originID, err := s.enqueueBroadcast(ctx, params[i])
+			if err != nil {
+				return nil, err
+			}
+			allIDs = append(allIDs, originID)
+		} else {
+			nonBroadcast = append(nonBroadcast, params[i])
+		}
+	}
+
+	// Process any remaining non-broadcast jobs
+	if len(nonBroadcast) > 0 {
+		ids, err := s.enqueueRegular(ctx, nonBroadcast)
+		if err != nil {
+			return nil, err
+		}
+		allIDs = append(allIDs, ids...)
+	}
+
+	return allIDs, nil
+}
+
+// enqueueRegular handles non-broadcast job insertion
+func (s *Store) enqueueRegular(ctx context.Context, params []EnqueueParams) ([]int64, error) {
 	// Normalize parameters and build args
 	args := make([]any, 0, len(params)*9)
 	for i := range params {
@@ -334,6 +382,99 @@ func (s *Store) EnqueueJobs(ctx context.Context, params []EnqueueParams) ([]int6
 		return nil, err
 	}
 	return ids, nil
+}
+
+// enqueueBroadcast handles broadcast job insertion:
+// 1. Insert origin job in 'queued' status
+// 2. Get active workers snapshot
+// 3. Insert per-worker child jobs with origin_job_id and target_worker_id
+// 4. Mark origin job as 'dispatched'
+// Returns the origin job ID
+func (s *Store) enqueueBroadcast(ctx context.Context, p EnqueueParams) (int64, error) {
+	if p.Queue == "" {
+		return 0, fmt.Errorf("queue is required: %w", apperrors.ErrInvalidArgument)
+	}
+	if p.TaskType == "" {
+		return 0, fmt.Errorf("task type is required: %w", apperrors.ErrInvalidArgument)
+	}
+	if p.Payload == nil {
+		p.Payload = []byte("{}")
+	}
+	var runAt time.Time
+	if p.RunAt == nil || p.RunAt.IsZero() {
+		runAt = s.now()
+	} else {
+		runAt = *p.RunAt
+	}
+	runAt = runAt.UTC()
+	if p.MaxAttempts == 0 {
+		p.MaxAttempts = 20
+	}
+	if p.BackoffSeconds == 0 {
+		p.BackoffSeconds = 10
+	}
+
+	var originID int64
+	// Wrap the broadcast flow in a transaction so the origin row is not visible
+	// in 'queued' state to claimers until child rows are inserted and the
+	// origin is marked 'dispatched' at commit time.
+	if err := s.withTx(ctx, func(tx Tx) error {
+		// Step 1: Insert origin job (inside tx)
+		if err := tx.QueryRowContext(ctx, `
+INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id;`,
+			p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, p.DedupeKey, p.ResourceKey,
+		).Scan(&originID); err != nil {
+			return err
+		}
+
+		// Step 2: Get active workers
+		// ActiveWorkers reads from the workers table; it's fine to call outside
+		// the transaction snapshot since worker liveness is independent of this tx.
+		cutoff := s.now().UTC().Add(-s.workerActiveGracePeriod)
+		workers, err := s.ActiveWorkers(ctx, cutoff)
+		if err != nil {
+			return fmt.Errorf("get active workers: %w", err)
+		}
+
+		// Step 3: Insert per-worker child jobs (inside tx)
+		if len(workers) > 0 {
+			args := make([]any, 0, len(workers)*9)
+			var b strings.Builder
+			b.WriteString("INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id) VALUES ")
+
+			for i, workerID := range workers {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				b.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+					i*9+1, i*9+2, i*9+3, i*9+4, i*9+5, i*9+6, i*9+7, i*9+8, i*9+9))
+
+				args = append(args, p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, originID, workerID)
+			}
+			b.WriteString(";")
+
+			if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+				return fmt.Errorf("bulk insert child jobs: %w", err)
+			}
+		}
+
+		// Step 4: Mark origin job as dispatched (inside tx)
+		nowTS := s.now().UTC()
+		if _, err := tx.ExecContext(ctx, `
+UPDATE queue_jobs
+SET status = 'dispatched', updated_at = $2
+WHERE id = $1;`, originID, nowTS); err != nil {
+			return fmt.Errorf("mark origin dispatched: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	return originID, nil
 }
 
 // GetJob loads a job by identifier.
@@ -617,6 +758,64 @@ WHERE resource_key = $1 AND job_id = $2;`, resourceKey, jobID)
 	return err
 }
 
+// RegisterWorker inserts or updates a worker in the registry with the current timestamp.
+// This method should be called at worker startup to register the worker.
+func (s *Store) RegisterWorker(ctx context.Context, workerID string, meta []byte) error {
+	if workerID == "" {
+		return fmt.Errorf("worker id is required: %w", apperrors.ErrInvalidArgument)
+	}
+	nowTS := s.now().UTC()
+	_, err := s.DB.ExecContext(ctx, `
+INSERT INTO queue_workers (worker_id, meta, last_seen)
+VALUES ($1, $2, $3)
+ON CONFLICT (worker_id) DO UPDATE
+SET meta = EXCLUDED.meta, last_seen = EXCLUDED.last_seen;`, workerID, meta, nowTS)
+	return err
+}
+
+// HeartbeatWorker updates the last_seen timestamp for a worker to indicate it is still active.
+// This method should be called periodically by workers to maintain their active status.
+func (s *Store) HeartbeatWorker(ctx context.Context, workerID string) error {
+	if workerID == "" {
+		return fmt.Errorf("worker id is required: %w", apperrors.ErrInvalidArgument)
+	}
+	nowTS := s.now().UTC()
+	_, err := s.DB.ExecContext(ctx, `
+UPDATE queue_workers
+SET last_seen = $2
+WHERE worker_id = $1;`, workerID, nowTS)
+	return err
+}
+
+// ActiveWorkers returns a list of worker IDs that have a last_seen timestamp
+// at or after the provided cutoff time. This is used to determine which workers
+// should receive broadcast jobs.
+func (s *Store) ActiveWorkers(ctx context.Context, cutoff time.Time) ([]string, error) {
+	cutoffUTC := cutoff.UTC()
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT worker_id
+FROM queue_workers
+WHERE last_seen >= $1
+ORDER BY worker_id;`, cutoffUTC)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []string
+	for rows.Next() {
+		var workerID string
+		if err := rows.Scan(&workerID); err != nil {
+			return nil, err
+		}
+		workers = append(workers, workerID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return workers, nil
+}
+
 func (s *Store) withTx(ctx context.Context, fn func(Tx) error) (err error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -639,11 +838,13 @@ func (s *Store) withTx(ctx context.Context, fn func(Tx) error) (err error) {
 
 func scanJob(row scanner) (Job, error) {
 	var (
-		job         Job
-		leaseUntil  sql.NullTime
-		workerID    sql.NullString
-		dedupeKey   sql.NullString
-		resourceKey sql.NullString
+		job            Job
+		leaseUntil     sql.NullTime
+		workerID       sql.NullString
+		dedupeKey      sql.NullString
+		resourceKey    sql.NullString
+		originJobID    sql.NullInt64
+		targetWorkerID sql.NullString
 	)
 
 	err := row.Scan(
@@ -661,6 +862,8 @@ func scanJob(row scanner) (Job, error) {
 		&workerID,
 		&dedupeKey,
 		&resourceKey,
+		&originJobID,
+		&targetWorkerID,
 		&job.CreatedAt,
 		&job.UpdatedAt,
 	)
@@ -683,6 +886,14 @@ func scanJob(row scanner) (Job, error) {
 	if resourceKey.Valid {
 		val := resourceKey.String
 		job.ResourceKey = &val
+	}
+	if originJobID.Valid {
+		val := originJobID.Int64
+		job.OriginJobID = &val
+	}
+	if targetWorkerID.Valid {
+		val := targetWorkerID.String
+		job.TargetWorkerID = &val
 	}
 
 	return job, nil

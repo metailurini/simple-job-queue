@@ -114,7 +114,7 @@ func main() {
 		},
 	}
 
-	runner, err := worker.NewRunner(store, db, handlers, workerCfg)
+	runner, err := worker.NewRunner(store, db, handlers, &workerCfg)
 	if err != nil {
 		logger.Error("failed to build worker", "err", err)
 		os.Exit(1)
@@ -122,6 +122,28 @@ func main() {
 
 	// record and log DB/app clock drift at startup
 	_, _ = diag.RecordClockDrift(ctx, db, provider, logger)
+
+	// Register worker in the registry
+	if err := store.RegisterWorker(ctx, workerCfg.WorkerID, nil); err != nil {
+		logger.Error("failed to register worker", "err", err)
+		os.Exit(1)
+	}
+
+	// Start worker heartbeat goroutine
+	go func() {
+		ticker := time.NewTicker(workerCfg.HeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := store.HeartbeatWorker(ctx, workerCfg.WorkerID); err != nil {
+					logger.Warn("worker heartbeat failed", "err", err)
+				}
+			}
+		}
+	}()
 
 	// Start janitor in separate goroutine
 	// If janitorMaxAge was provided use it; otherwise default to 2× lease.

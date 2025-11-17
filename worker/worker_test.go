@@ -30,7 +30,7 @@ func TestNewRunnerAppliesDefaults(t *testing.T) {
 	handlers := HandlerMap{"task": func(context.Context, storage.Job) error { return nil }}
 	cfg := Config{Queues: []QueueConfig{{Name: "default"}}}
 
-	runner, err := NewRunner(store, db, handlers, cfg)
+	runner, err := NewRunner(store, db, handlers, &cfg)
 	require.NoError(t, err)
 	require.NotEmpty(t, runner.cfg.WorkerID, "expected worker id to be generated")
 	assert.Equal(t, 1, runner.cfg.Queues[0].BatchSize, "expected batch size default 1")
@@ -91,7 +91,7 @@ func TestNewRunnerValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewRunner(tt.store, tt.db, tt.h, Config{Queues: tt.queues})
+			_, err := NewRunner(tt.store, tt.db, tt.h, &Config{Queues: tt.queues})
 			if tt.wantErr == "store is required" || tt.wantErr == "database is required" {
 				require.ErrorIs(t, err, apperrors.ErrNotConfigured)
 			} else {
@@ -104,7 +104,7 @@ func TestNewRunnerValidation(t *testing.T) {
 
 func TestRunnerWaitForWorkWithoutNotifier(t *testing.T) {
 	r := &Runner{
-		cfg:      Config{PollInterval: 20 * time.Millisecond},
+		cfg:      &Config{PollInterval: 20 * time.Millisecond},
 		inflight: make(chan struct{}, 1),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -122,7 +122,7 @@ func TestRunnerWaitForWorkWithNotifier(t *testing.T) {
 	notifier := &pgNotifier{updates: updates}
 
 	r := &Runner{
-		cfg:      Config{PollInterval: 500 * time.Millisecond},
+		cfg:      &Config{PollInterval: 500 * time.Millisecond},
 		notifier: notifier,
 		inflight: make(chan struct{}, 1),
 	}
@@ -139,7 +139,7 @@ func TestRunnerWaitForWorkNotifierClosed(t *testing.T) {
 	notifier := &pgNotifier{updates: updates}
 
 	r := &Runner{
-		cfg:      Config{PollInterval: 10 * time.Millisecond},
+		cfg:      &Config{PollInterval: 10 * time.Millisecond},
 		notifier: notifier,
 		inflight: make(chan struct{}, 1),
 	}
@@ -156,7 +156,7 @@ func TestRunnerAvailableCapacity(t *testing.T) {
 
 func TestRunnerIdleSleepJitter(t *testing.T) {
 	rand.Seed(1)
-	r := &Runner{cfg: Config{PollInterval: 10 * time.Millisecond, IdleJitter: 10 * time.Millisecond}}
+	r := &Runner{cfg: &Config{PollInterval: 10 * time.Millisecond, IdleJitter: 10 * time.Millisecond}}
 	sleep := r.idleSleep()
 	assert.GreaterOrEqual(t, sleep, 10*time.Millisecond, "expected sleep within jitter window")
 	assert.LessOrEqual(t, sleep, 20*time.Millisecond, "expected sleep within jitter window")
@@ -191,7 +191,7 @@ func TestRunnerRunContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	r := &Runner{cfg: Config{}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), inflight: make(chan struct{}, 1)}
+	r := &Runner{cfg: &Config{}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), inflight: make(chan struct{}, 1)}
 
 	require.ErrorIs(t, r.Run(ctx), context.Canceled)
 }
