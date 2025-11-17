@@ -79,7 +79,7 @@ type Runner struct {
 	store      jobStore
 	db         *sql.DB
 	handlers   HandlerMap
-	cfg        Config
+	cfg        *Config
 	logger     *slog.Logger
 	inflight   chan struct{}
 	queueIndex map[string]QueueConfig
@@ -88,7 +88,7 @@ type Runner struct {
 }
 
 // NewRunner validates configuration and returns a worker runner.
-func NewRunner(store jobStore, db *sql.DB, handlers HandlerMap, cfg Config) (*Runner, error) {
+func NewRunner(store jobStore, db *sql.DB, handlers HandlerMap, cfg *Config) (*Runner, error) {
 	if store == nil {
 		return nil, apperrors.ErrNotConfigured
 	}

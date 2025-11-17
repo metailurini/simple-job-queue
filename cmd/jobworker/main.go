@@ -114,7 +114,7 @@ func main() {
 		},
 	}
 
-	runner, err := worker.NewRunner(store, db, handlers, workerCfg)
+	runner, err := worker.NewRunner(store, db, handlers, &workerCfg)
 	if err != nil {
 		logger.Error("failed to build worker", "err", err)
 		os.Exit(1)

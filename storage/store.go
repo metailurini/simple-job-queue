@@ -165,10 +165,6 @@ updated AS (
 		updated_at  = $5
 	FROM candidates c
 	WHERE j.id = c.id
-		AND (
-			(j.target_worker_id IS NULL AND ((j.status = 'queued' AND j.run_at <= $5) OR ($6 AND j.status = 'running' AND j.lease_until < $5)))
-			OR (j.target_worker_id = $2 AND j.status = 'queued' AND j.run_at <= $5)
-		)
 	RETURNING j.*
 )
 SELECT` + jobColumns + `
@@ -413,45 +409,53 @@ func (s *Store) enqueueBroadcast(ctx context.Context, p EnqueueParams) (int64, e
 		p.BackoffSeconds = 10
 	}
 
-	// Step 1: Insert origin job
 	var originID int64
-	err := s.DB.QueryRowContext(ctx, `
+	// Wrap the broadcast flow in a transaction so the origin row is not visible
+	// in 'queued' state to claimers until child rows are inserted and the
+	// origin is marked 'dispatched' at commit time.
+	if err := s.withTx(ctx, func(tx Tx) error {
+		// Step 1: Insert origin job (inside tx)
+		if err := tx.QueryRowContext(ctx, `
 INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, dedupe_key, resource_key)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING id;`,
-		p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, p.DedupeKey, p.ResourceKey,
-	).Scan(&originID)
-	if err != nil {
-		return 0, err
-	}
+			p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, p.DedupeKey, p.ResourceKey,
+		).Scan(&originID); err != nil {
+			return err
+		}
 
-	// Step 2: Get active workers (5 minute grace period)
-	cutoff := s.now().UTC().Add(-5 * time.Minute)
-	workers, err := s.ActiveWorkers(ctx, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("get active workers: %w", err)
-	}
+		// Step 2: Get active workers (5 minute grace period)
+		// ActiveWorkers reads from the workers table; it's fine to call outside
+		// the transaction snapshot since worker liveness is independent of this tx.
+		cutoff := s.now().UTC().Add(-5 * time.Minute)
+		workers, err := s.ActiveWorkers(ctx, cutoff)
+		if err != nil {
+			return fmt.Errorf("get active workers: %w", err)
+		}
 
-	// Step 3: Insert per-worker child jobs
-	for _, workerID := range workers {
-		_, err := s.DB.ExecContext(ctx, `
+		// Step 3: Insert per-worker child jobs (inside tx)
+		for _, workerID := range workers {
+			if _, err := tx.ExecContext(ctx, `
 INSERT INTO queue_jobs (queue, task_type, payload, priority, run_at, max_attempts, backoff_sec, origin_job_id, target_worker_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
-			p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, originID, workerID,
-		)
-		if err != nil {
-			return 0, fmt.Errorf("insert child job for worker %s: %w", workerID, err)
+				p.Queue, p.TaskType, p.Payload, p.Priority, runAt, p.MaxAttempts, p.BackoffSeconds, originID, workerID,
+			); err != nil {
+				return fmt.Errorf("insert child job for worker %s: %w", workerID, err)
+			}
 		}
-	}
 
-	// Step 4: Mark origin job as dispatched
-	nowTS := s.now().UTC()
-	_, err = s.DB.ExecContext(ctx, `
+		// Step 4: Mark origin job as dispatched (inside tx)
+		nowTS := s.now().UTC()
+		if _, err := tx.ExecContext(ctx, `
 UPDATE queue_jobs
 SET status = 'dispatched', updated_at = $2
-WHERE id = $1;`, originID, nowTS)
-	if err != nil {
-		return 0, fmt.Errorf("mark origin dispatched: %w", err)
+WHERE id = $1;`, originID, nowTS); err != nil {
+			return fmt.Errorf("mark origin dispatched: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return 0, err
 	}
 
 	return originID, nil

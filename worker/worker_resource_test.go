@@ -108,7 +108,7 @@ func setupTestRunner(t *testing.T, mockStore *mockJobStore, handlers HandlerMap)
 	store, err := storage.NewStore(db, time.Now)
 	require.NoError(t, err)
 
-	runner, err := NewRunner(store, db, handlers, cfg)
+	runner, err := NewRunner(store, db, handlers, &cfg)
 	require.NoError(t, err)
 	// Replace the store with our mock
 	runner.store = mockStore
