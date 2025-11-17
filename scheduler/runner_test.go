@@ -108,12 +108,12 @@ func TestTickEnqueuesDueRunsAndUpdatesSchedule(t *testing.T) {
 			return runNow
 		},
 	}
-	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at"}).
-		AddRow(int64(10), "send-email", "critical", []byte(`{"foo":"bar"}`), "* * * * *", sql.NullString{Valid: true, String: "dedupe"}, sql.NullTime{Valid: true, Time: initialLast})
+	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at", "broadcast"}).
+		AddRow(int64(10), "send-email", "critical", []byte(`{"foo":"bar"}`), "* * * * *", sql.NullString{Valid: true, String: "dedupe"}, sql.NullTime{Valid: true, Time: initialLast}, false)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(`
-SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
+SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at, broadcast
 FROM queue_schedules;
 `).WillReturnRows(rows)
 
@@ -153,11 +153,11 @@ func TestTickSkipsWhenScheduleAlreadyClaimed(t *testing.T) {
 			return now
 		},
 	}
-	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at"}).
-		AddRow(int64(42), "send-email", "default", []byte(`{"foo":true}`), "* * * * *", sql.NullString{}, sql.NullTime{})
+	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at", "broadcast"}).
+		AddRow(int64(42), "send-email", "default", []byte(`{"foo":true}`), "* * * * *", sql.NullString{}, sql.NullTime{}, false)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`
-SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
+SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at, broadcast
 FROM queue_schedules;
 `).WillReturnRows(rows)
 	mock.ExpectExec("UPDATE queue_schedules").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -186,11 +186,11 @@ func TestTickRevertsScheduleWhenEnqueueFails(t *testing.T) {
 		},
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at"}).
-		AddRow(int64(51), "sync-data", "critical", []byte(`{"bar":true}`), "* * * * *", sql.NullString{}, sql.NullTime{})
+	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at", "broadcast"}).
+		AddRow(int64(51), "sync-data", "critical", []byte(`{"bar":true}`), "* * * * *", sql.NullString{}, sql.NullTime{}, false)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`
-SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
+SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at, broadcast
 FROM queue_schedules;
 `).WillReturnRows(rows)
 	mock.ExpectExec("UPDATE queue_schedules").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -272,6 +272,8 @@ func (r stubRow) scanInto(dest ...any) error {
 			*ptr = r.values[i].(int)
 		case *string:
 			*ptr = r.values[i].(string)
+		case *bool:
+			*ptr = r.values[i].(bool)
 		case *[]byte:
 			if r.values[i] == nil {
 				*ptr = nil
@@ -314,6 +316,7 @@ func TestScanScheduleCopiesPayloadAndSetsPointers(t *testing.T) {
 		"*/5 * * * *",
 		dedupe,
 		last,
+		false,
 	}}}
 
 	schedule, err := storage.ScanSchedule(row)
@@ -322,6 +325,7 @@ func TestScanScheduleCopiesPayloadAndSetsPointers(t *testing.T) {
 	assert.Equal(t, int64(5), schedule.ID)
 	assert.Equal(t, "send", schedule.TaskType)
 	assert.Equal(t, "queue", schedule.Queue)
+	assert.Equal(t, false, schedule.Broadcast)
 
 	payload[0] = 9
 	expectedPayload := []byte{1, 2, 3}
@@ -362,6 +366,47 @@ func TestEnqueueRunsBuildsParamsAndSkipsDuplicates(t *testing.T) {
 
 	mock.ExpectQuery("INSERT INTO queue_jobs").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(1)).AddRow(int64(3)))
+
+	err = runner.enqueueRuns(context.Background(), schedule, runTimes)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEnqueueRunsPassesBroadcastFlag(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	now := time.Date(2024, 5, 6, 7, 0, 0, 0, time.UTC)
+	store, err := storage.NewStore(db, func() time.Time { return now })
+	require.NoError(t, err)
+
+	runner := &Runner{
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		catchUpMax: 3,
+		store:      store,
+	}
+
+	// Test with broadcast=true
+	schedule := storage.ScheduleRow{
+		ID:        99,
+		TaskType:  "broadcast-task",
+		Queue:     "default",
+		Payload:   []byte(`{"msg":"hello"}`),
+		Broadcast: true,
+	}
+	runTimes := []time.Time{
+		time.Date(2024, 5, 6, 7, 1, 0, 0, time.UTC),
+	}
+
+	// For broadcast, the store creates a transaction and inserts origin + child jobs
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO queue_jobs").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(100)))
+	mock.ExpectQuery("SELECT worker_id FROM queue_workers").
+		WillReturnRows(sqlmock.NewRows([]string{"worker_id"}))
+	mock.ExpectExec("UPDATE queue_jobs").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	err = runner.enqueueRuns(context.Background(), schedule, runTimes)
 	require.NoError(t, err)

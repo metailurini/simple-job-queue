@@ -499,6 +499,7 @@ type ScheduleRow struct {
 	Cron           string
 	DedupeKey      *string
 	LastEnqueuedAt *time.Time
+	Broadcast      bool
 }
 
 type scanner interface {
@@ -512,7 +513,7 @@ func ScanSchedule(row scanner) (ScheduleRow, error) {
 		dedupeKey sql.NullString
 		lastRun   sql.NullTime
 	)
-	if err := row.Scan(&s.ID, &s.TaskType, &s.Queue, &payload, &s.Cron, &dedupeKey, &lastRun); err != nil {
+	if err := row.Scan(&s.ID, &s.TaskType, &s.Queue, &payload, &s.Cron, &dedupeKey, &lastRun, &s.Broadcast); err != nil {
 		return ScheduleRow{}, err
 	}
 	// Copy the scanned payload into a new slice so the returned ScheduleRow
@@ -539,7 +540,7 @@ func ScanSchedule(row scanner) (ScheduleRow, error) {
 // continue processing other schedules in the same transaction.
 func (s *Store) FetchSchedulesTx(ctx context.Context, tx Tx) ([]ScheduleRow, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
+SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at, broadcast
 FROM queue_schedules;
 `)
 	if err != nil {

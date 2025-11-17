@@ -185,6 +185,7 @@ func (r *Runner) enqueueRuns(ctx context.Context, schedule storage.ScheduleRow, 
 			Priority:    0,
 			RunAt:       &runAtCopy,
 			MaxAttempts: 0,
+			Broadcast:   schedule.Broadcast,
 		}
 		if schedule.DedupeKey != nil {
 			dedupe := fmt.Sprintf("%s:%d", *schedule.DedupeKey, runAt.Unix())
