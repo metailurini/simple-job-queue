@@ -132,7 +132,7 @@ func TestJanitor_CleanupMultipleDeadWorkers(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		workerID := time.Duration(i)*time.Minute + 5*time.Minute
 		lastSeen := now.Add(-workerID)
-		_, err := db.ExecContext(ctx, `INSERT INTO queue_workers (worker_id, last_seen) VALUES ($1, $2);`, 
+		_, err := db.ExecContext(ctx, `INSERT INTO queue_workers (worker_id, last_seen) VALUES ($1, $2);`,
 			time.Duration(i).String(), lastSeen)
 		require.NoError(t, err)
 	}

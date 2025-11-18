@@ -12,10 +12,16 @@ CREATE TABLE IF NOT EXISTS queue_workers (
 
 CREATE INDEX IF NOT EXISTS queue_workers_last_seen_idx ON queue_workers (last_seen);
 CREATE INDEX IF NOT EXISTS queue_jobs_target_worker_idx ON queue_jobs (target_worker_id, status, run_at);
+
+ALTER TABLE queue_schedules
+  ADD COLUMN broadcast BOOLEAN NOT NULL DEFAULT FALSE;
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
+ALTER TABLE queue_schedules
+  DROP COLUMN IF EXISTS broadcast;
+
 DROP INDEX IF EXISTS queue_jobs_target_worker_idx;
 DROP INDEX IF EXISTS queue_workers_last_seen_idx;
 DROP TABLE IF EXISTS queue_workers;

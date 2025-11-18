@@ -41,12 +41,12 @@ func TestFetchSchedulesTxSelectsWithoutLocks(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at"}).
-		AddRow(int64(1), "sync", "default", []byte(`{"a":1}`), "* * * * *", sql.NullString{}, sql.NullTime{})
+	rows := sqlmock.NewRows([]string{"id", "task_type", "queue", "payload", "cron", "dedupe_key", "last_enqueued_at", "broadcast"}).
+		AddRow(int64(1), "sync", "default", []byte(`{"a":1}`), "* * * * *", sql.NullString{}, sql.NullTime{}, false)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(`
-SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at
+SELECT id, task_type, queue, payload, cron, dedupe_key, last_enqueued_at, broadcast
 FROM queue_schedules;
 `).
 		WillReturnRows(rows)
