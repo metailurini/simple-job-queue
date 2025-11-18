@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/metailurini/simple-job-queue/compare/v1.2.0...v1.3.0) (2025-11-18)
+
+
+### Features
+
+* Add broadcast job dispatch to all active workers ([#8](https://github.com/metailurini/simple-job-queue/issues/8)) ([b1cff64](https://github.com/metailurini/simple-job-queue/commit/b1cff64446b847c431cb5bb83eb82cbdcf479e54))
+* Enable scheduler to create broadcast jobs ([#10](https://github.com/metailurini/simple-job-queue/issues/10)) ([32c2140](https://github.com/metailurini/simple-job-queue/commit/32c2140c4da755e952614b71f70e01964150b2c5))
+
 ## [1.2.0](https://github.com/metailurini/simple-job-queue/compare/v1.1.0...v1.2.0) (2025-11-05)
 
 
