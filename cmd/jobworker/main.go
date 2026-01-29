@@ -16,6 +16,7 @@ import (
 	"github.com/metailurini/simple-job-queue/diag"
 	"github.com/metailurini/simple-job-queue/janitor"
 	"github.com/metailurini/simple-job-queue/storage"
+	"github.com/metailurini/simple-job-queue/storage/migrator"
 	"github.com/metailurini/simple-job-queue/timeprovider"
 	"github.com/metailurini/simple-job-queue/worker"
 )
@@ -33,6 +34,7 @@ func main() {
 		concurrency  = flag.Int("concurrency", 8, "Maximum concurrent job handlers")
 		stealExpired = flag.Bool("steal-expired", true, "Claim expired leases in addition to queued jobs")
 		listenNotify = flag.Bool("listen-notify", false, "Use LISTEN/NOTIFY to wake idle workers")
+		autoMigrate  = flag.Bool("auto-migrate", true, "Apply database migrations on startup")
 		// Janitor-specific flags
 		janitorGracePeriod = flag.Duration("janitor-grace-period", 30*time.Second, "Janitor shutdown grace period")
 		janitorMaxAge      = flag.Duration("janitor-max-age", 0, "Max age for resource locks (defaults to 2× lease if 0)")
@@ -69,6 +71,13 @@ func main() {
 	if err := db.PingContext(ctx); err != nil {
 		logger.Error("failed to connect to db", "err", err)
 		os.Exit(1)
+	}
+
+	if *autoMigrate {
+		if err := migrator.Run(ctx, db, logger); err != nil {
+			logger.Error("failed to apply migrations", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	// Configure connection pool limits to sensible defaults. Consider exposing

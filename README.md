@@ -22,3 +22,7 @@ Intended uses
 Project notes
 
 The project emphasizes small, focused binaries and packages so operators can run only the components they need. Storage and worker behavior is intentionally explicit to make testing and auditing straightforward.
+
+Migrations
+
+Database migrations live in `db/migrations` and are applied automatically at worker startup by default. You can disable this with `--auto-migrate=false` if you prefer to run migrations as an explicit deployment step. The worker uses embedded SQL migrations, so no external tooling is required at runtime.
