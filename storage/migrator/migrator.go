@@ -19,21 +19,29 @@ type migrateRunner interface {
 	Close() (sourceErr, dbErr error)
 }
 
-type migrateFactory func(db *sql.DB) (migrateRunner, error)
+type migrateFactory func(ctx context.Context, db *sql.DB) (migrateRunner, error)
 
-func defaultMigrator(db *sql.DB) (migrateRunner, error) {
-	driver, err := postgres.WithInstance(db, &postgres.Config{})
+func defaultMigrator(ctx context.Context, db *sql.DB) (migrateRunner, error) {
+	conn, err := db.Conn(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("acquire db connection for migrations: %w", err)
+	}
+
+	driver, err := postgres.WithConnection(ctx, conn, &postgres.Config{})
+	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("init postgres migration driver: %w", err)
 	}
 
 	source, err := iofs.New(migrations.FS, ".")
 	if err != nil {
+		driver.Close()
 		return nil, fmt.Errorf("init migration source: %w", err)
 	}
 
 	m, err := migrate.NewWithInstance("iofs", source, "postgres", driver)
 	if err != nil {
+		driver.Close()
 		return nil, fmt.Errorf("init migrator: %w", err)
 	}
 
@@ -66,7 +74,7 @@ func (r *Runner) Run(ctx context.Context, db *sql.DB, logger *slog.Logger) error
 		logger = slog.Default()
 	}
 
-	m, err := r.factory(db)
+	m, err := r.factory(ctx, db)
 	if err != nil {
 		return err
 	}

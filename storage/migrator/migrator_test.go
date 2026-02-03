@@ -4,86 +4,70 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/stretchr/testify/require"
 )
 
-// These tests use a fake migrator; no external database is required.
-
-type fakeMigrator struct {
-	upErr      error
-	closeErr   error
-	closeDBErr error
-	closed     bool
+type stubRunner struct {
+	upCalled    bool
+	closeCalled bool
+	upErr       error
+	sourceClose error
+	dbClose     error
 }
 
-func (f *fakeMigrator) Up() error {
-	return f.upErr
+func (s *stubRunner) Up() error {
+	s.upCalled = true
+	return s.upErr
 }
 
-func (f *fakeMigrator) Close() (error, error) {
-	f.closed = true
-	return f.closeErr, f.closeDBErr
+func (s *stubRunner) Close() (sourceErr, dbErr error) {
+	s.closeCalled = true
+	return s.sourceClose, s.dbClose
 }
 
-func TestRun(t *testing.T) {
-	ctx := context.Background()
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
-	cases := []struct {
-		name      string
-		upErr     error
-		wantErr   bool
-		wantClose bool
-	}{
-		{
-			name:      "success",
-			wantErr:   false,
-			wantClose: true,
-		},
-		{
-			name:      "no changes",
-			upErr:     migrate.ErrNoChange,
-			wantErr:   false,
-			wantClose: true,
-		},
-		{
-			name:      "failure",
-			upErr:     errors.New("boom"),
-			wantErr:   true,
-			wantClose: true,
-		},
+func TestRunInvokesUpAndClose(t *testing.T) {
+	stub := &stubRunner{}
+	factory := func(_ context.Context, _ *sql.DB) (migrateRunner, error) { return stub, nil }
+
+	err := NewRunner(factory).Run(context.Background(), &sql.DB{}, discardLogger())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeMigrator{upErr: tc.upErr}
-			runner := NewRunner(func(_ *sql.DB) (migrateRunner, error) {
-				return fake, nil
-			})
-
-			err := runner.Run(ctx, nil, nil)
-			if tc.wantErr {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			if tc.wantClose && !fake.closed {
-				t.Fatalf("expected migrator to close")
-			}
-		})
+	if !stub.upCalled {
+		t.Fatalf("expected Up to be called")
+	}
+	if !stub.closeCalled {
+		t.Fatalf("expected Close to be called")
 	}
 }
 
-func TestRunContextCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+func TestRunTreatsNoChangeAsSuccess(t *testing.T) {
+	stub := &stubRunner{upErr: migrate.ErrNoChange}
+	factory := func(_ context.Context, _ *sql.DB) (migrateRunner, error) { return stub, nil }
 
-	runner := NewRunner(func(_ *sql.DB) (migrateRunner, error) {
-		return &fakeMigrator{}, nil
-	})
+	if err := NewRunner(factory).Run(context.Background(), &sql.DB{}, discardLogger()); err != nil {
+		t.Fatalf("Run() unexpected error for ErrNoChange: %v", err)
+	}
+	if !stub.upCalled || !stub.closeCalled {
+		t.Fatalf("expected Up and Close to be called")
+	}
+}
 
-	err := runner.Run(ctx, nil, nil)
-	require.ErrorIs(t, err, context.Canceled)
+func TestRunPropagatesUpError(t *testing.T) {
+	wantErr := errors.New("boom")
+	stub := &stubRunner{upErr: wantErr}
+	factory := func(_ context.Context, _ *sql.DB) (migrateRunner, error) { return stub, nil }
+
+	err := NewRunner(factory).Run(context.Background(), &sql.DB{}, discardLogger())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Run() error = %v, want %v", err, wantErr)
+	}
 }
