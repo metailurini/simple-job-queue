@@ -1,5 +1,3 @@
--- +goose Up
--- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS queue_jobs (
     id            BIGSERIAL PRIMARY KEY,
     queue         TEXT        NOT NULL,
@@ -28,12 +26,3 @@ CREATE INDEX IF NOT EXISTS queue_jobs_requeue_idx
 CREATE UNIQUE INDEX IF NOT EXISTS queue_jobs_dedupe_active_uniq
   ON queue_jobs (queue, task_type, dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
--- +goose StatementEnd
-
--- +goose Down
--- +goose StatementBegin
-DROP INDEX IF EXISTS queue_jobs_dedupe_active_uniq;
-DROP INDEX IF EXISTS queue_jobs_requeue_idx;
-DROP INDEX IF EXISTS queue_jobs_queue_sched_idx;
-DROP TABLE IF EXISTS queue_jobs;
--- +goose StatementEnd
