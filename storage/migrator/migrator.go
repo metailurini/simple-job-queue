@@ -21,7 +21,7 @@ type migrateRunner interface {
 
 type migrateFactory func(db *sql.DB) (migrateRunner, error)
 
-var newMigrator migrateFactory = func(db *sql.DB) (migrateRunner, error) {
+func defaultMigrator(db *sql.DB) (migrateRunner, error) {
 	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("init postgres migration driver: %w", err)
@@ -40,13 +40,33 @@ var newMigrator migrateFactory = func(db *sql.DB) (migrateRunner, error) {
 	return m, nil
 }
 
+// Runner executes database migrations using a provided migrator factory.
+type Runner struct {
+	factory migrateFactory
+}
+
+// NewRunner constructs a Runner. When factory is nil, the default migrator
+// implementation backed by golang-migrate is used.
+func NewRunner(factory migrateFactory) *Runner {
+	if factory == nil {
+		factory = defaultMigrator
+	}
+
+	return &Runner{factory: factory}
+}
+
 // Run applies any pending database migrations. It is safe to call multiple times.
 func Run(ctx context.Context, db *sql.DB, logger *slog.Logger) error {
+	return NewRunner(nil).Run(ctx, db, logger)
+}
+
+// Run applies any pending database migrations. It is safe to call multiple times.
+func (r *Runner) Run(ctx context.Context, db *sql.DB, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
-	m, err := newMigrator(db)
+	m, err := r.factory(db)
 	if err != nil {
 		return err
 	}

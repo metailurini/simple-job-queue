@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/stretchr/testify/require"
 )
 
 // These tests use a fake migrator; no external database is required.
@@ -29,10 +30,6 @@ func (f *fakeMigrator) Close() (error, error) {
 
 func TestRun(t *testing.T) {
 	ctx := context.Background()
-	baseFactory := newMigrator
-	defer func() {
-		newMigrator = baseFactory
-	}()
 
 	cases := []struct {
 		name      string
@@ -62,16 +59,15 @@ func TestRun(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeMigrator{upErr: tc.upErr}
-			newMigrator = func(_ *sql.DB) (migrateRunner, error) {
+			runner := NewRunner(func(_ *sql.DB) (migrateRunner, error) {
 				return fake, nil
-			}
+			})
 
-			err := Run(ctx, nil, nil)
-			if tc.wantErr && err == nil {
-				t.Fatalf("expected error")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			err := runner.Run(ctx, nil, nil)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
 			}
 			if tc.wantClose && !fake.closed {
 				t.Fatalf("expected migrator to close")
@@ -84,16 +80,10 @@ func TestRunContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	baseFactory := newMigrator
-	defer func() {
-		newMigrator = baseFactory
-	}()
-
-	newMigrator = func(_ *sql.DB) (migrateRunner, error) {
+	runner := NewRunner(func(_ *sql.DB) (migrateRunner, error) {
 		return &fakeMigrator{}, nil
-	}
+	})
 
-	if err := Run(ctx, nil, nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context cancellation, got %v", err)
-	}
+	err := runner.Run(ctx, nil, nil)
+	require.ErrorIs(t, err, context.Canceled)
 }
