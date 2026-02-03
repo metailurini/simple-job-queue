@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/metailurini/simple-job-queue/compare/v1.3.0...v1.4.0) (2026-02-03)
+
+
+### Features
+
+* apply migrations at worker startup ([#12](https://github.com/metailurini/simple-job-queue/issues/12)) ([19ddbe2](https://github.com/metailurini/simple-job-queue/commit/19ddbe27a0d85e6b18225abdbe1dcdd7a637c7a5))
+
 ## [1.3.0](https://github.com/metailurini/simple-job-queue/compare/v1.2.0...v1.3.0) (2025-11-18)
 
 
